@@ -18,6 +18,38 @@
 
 `torchtitan` is under extensive development. To use the latest features of `torchtitan`, we recommend using the most recent PyTorch nightly.
 
+~~~~~~~~~~~~
+## torchtitan_moe fork change 1 start
+~~~~~~~~~~~~
+
+## Setup
+   1. Make sure you have `uv` installed
+      - https://docs.astral.sh/uv/getting-started/installation/#installation-methods
+   2. Setup a virtual environment
+      - `python3.10 -m venv <directory>`
+      - example: `python3.10 -m venv .venv`
+      - using uv: `uv venv .venv`
+   3. Activate the virtual environment
+      - Windows cmd: `.venv\Scripts\activate.bat`
+      - Windows powershell: `.venv\Scripts\Activate.ps1`
+      - Linux/Mac/Other: `source .venv/bin/activate`
+   4. Pip install all dependencies
+      - `uv sync && uv pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu126 --force-reinstall`
+
+## Command to run training script (single node - up to 8 GPUs)
+   1. [Downloading a tokenizer](#downloading-a-tokenizer)
+      - `python scripts/download_hf_assets.py --repo_id meta-llama/Llama-3.1-8B --assets tokenizer --hf_token=$YOUR_HF_TOKEN`
+   2. [Start a training run](#start-a-training-run)
+      - `LOG_RANK=0 NGPU=8 CONFIG_FILE="./torchtitan/models/llama3/train_configs/llama3_8b.toml" ./run_train.sh`
+
+
+
+## Command to run training script (multi-node)
+1. [Multi-Node Training](#multi-node-training)
+
+~~~~~~~~~~~~
+## torchtitan_moe fork change 1 end
+~~~~~~~~~~~~
 
 ## Latest News
 - [2025/11] AMD released an [optimized fork](https://github.com/AMD-AGI/torchtitan-amd/tree/main) of `torchtitan` for AMD GPUs.
