@@ -14,6 +14,7 @@ import torch.nn.functional as F
 from torch.nn.attention import sdpa_kernel, SDPBackend
 from torch.nn.attention.flex_attention import (
     _mask_mod_signature,
+    _score_mod_signature,
     BlockMask,
     create_block_mask,
     flex_attention,
@@ -83,8 +84,18 @@ class VarlenAttentionWrapper(torch.nn.Module):
             cu_seq_k,
             max_q,
             max_k,
-            is_causal=True,
             scale=scale,
+            # window_size=(left, right) controls the attention window relative to each
+            # query position. 'left' is how many tokens before the query to attend to,
+            # and 'right' is how many tokens after. A value of -1 means unlimited.
+            #
+            # This replaces the is_causal flag:
+            #   - (-1, 0): Causal attention - each token attends to all previous tokens
+            #              and itself, but no future tokens. Equivalent to is_causal=True.
+            #   - (-1, -1): Full bidirectional attention (no masking). Equivalent to
+            #               is_causal=False.
+            #   - (W, 0): Sliding window causal - attend to at most W previous tokens.
+            window_size=(-1, 0),
         )
 
 
@@ -118,7 +129,8 @@ class FlexAttentionWrapper(torch.nn.Module):
         k: torch.Tensor,
         v: torch.Tensor,
         *,
-        block_mask: BlockMask,
+        score_mod: _score_mod_signature | None = None,
+        block_mask: BlockMask | None = None,
         scale: float | None = None,
         return_lse: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
