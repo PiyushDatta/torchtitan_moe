@@ -75,6 +75,33 @@ deepseekv3_args = {
         attn_type="flex",
         attn_mask_type="block_causal",
     ),
+    # ~10B model variant for testing MoE on 4x A100 40GB GPUs
+    # MoE config identical to 16B: 64 experts, top_k=6, 2 shared experts
+    "9.7B": DeepSeekV3ModelArgs(
+        vocab_size=102400,
+        dim=1264,
+        inter_dim=6870,
+        moe_inter_dim=1408,
+        n_layers=27,
+        n_dense_layers=1,
+        n_heads=16,
+        moe_args=MoEArgs(
+            num_experts=64,
+            num_shared_experts=2,
+            top_k=6,
+            score_func="softmax",
+            route_norm=False,
+            score_before_experts=False,
+        ),
+        q_lora_rank=0,
+        kv_lora_rank=512,
+        qk_nope_head_dim=128,
+        qk_rope_head_dim=64,
+        v_head_dim=128,
+        mscale=0.70,
+        attn_type="flex",
+        attn_mask_type="block_causal",
+    ),
     "16B": DeepSeekV3ModelArgs(
         vocab_size=102400,
         dim=2048,
