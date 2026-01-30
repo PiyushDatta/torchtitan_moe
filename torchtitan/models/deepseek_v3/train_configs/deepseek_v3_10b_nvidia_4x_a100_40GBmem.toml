@@ -19,7 +19,7 @@ enable_wandb = false
 
 [model]
 name = "deepseek_v3"
-flavor = "9.7B"
+flavor = "10B"
 hf_assets_path = "./assets/hf/deepseek-moe-16b-base"
 # converters = ["float8"]
 

@@ -64,6 +64,9 @@ class DeepSeekV3ModelArgs(BaseModelArgs):
     # MoE
     moe_args: MoEArgs = field(default_factory=MoEArgs)
 
+    # MoE implementation type (set from config via update_from_config)
+    moe_impl: str = "standard"  # "standard" or "deepep"
+
     # Expert parallel communication backend (set from config)
     expert_parallel_comm_backend: str = "standard"  # "standard" or "deepep"
 

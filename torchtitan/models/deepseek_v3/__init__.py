@@ -75,9 +75,9 @@ deepseekv3_args = {
         attn_type="flex",
         attn_mask_type="block_causal",
     ),
-    # ~10B model variant for testing MoE on 4x A100 40GB GPUs
+    # ~10B (9.7B) model variant for testing MoE on 4x A100 40GB GPUs
     # MoE config identical to 16B: 64 experts, top_k=6, 2 shared experts
-    "9.7B": DeepSeekV3ModelArgs(
+    "10B": DeepSeekV3ModelArgs(
         vocab_size=102400,
         dim=1264,
         inter_dim=6870,
