@@ -9,14 +9,35 @@
 #   CHECKPOINT_DIR - Path to checkpoint directory (required)
 #   CONFIG_FILE    - Path to training config TOML file (required)
 #   OUTPUT_DIR     - Directory to save results (default: {dump_folder}/eval from config)
+#   PRESET         - Evaluation preset: 30s, 1min, 5min, 15min, full (default: full)
 #   SKIP_LM_EVAL   - Set to 1 to skip lm_eval benchmark (default: 0)
 #   LM_EVAL_ONLY   - Set to 1 to only run lm_eval, skip other evaluations (default: 0)
-#   LM_EVAL_TASKS  - Space-separated list of lm_eval tasks (default: "mmlu hellaswag arc_easy")
-#   LM_EVAL_LIMIT  - Limit number of examples per task (default: all). E.g., 100 for quick testing
+#   LM_EVAL_TASKS  - Space-separated list of lm_eval tasks (default: from preset)
+#   LM_EVAL_LIMIT  - Limit number of examples per task (default: from preset)
 #   SEED           - Random seed for reproducibility (default: 1337)
 #   NGPU           - Number of GPUs to use (default: auto-detect from config)
 #
+# Presets:
+#   30s   - Ultra-quick: routing only (10 samples), no inference/lm_eval
+#   1min  - Quick check: routing (10) + inference (1 iter) + lm_eval (5 samples)
+#   5min  - Fast comparison: routing (30) + inference (3 iters) + lm_eval (20 samples)
+#   15min - Moderate: routing (50) + inference (5 iters) + lm_eval (100 samples)
+#   full  - Complete evaluation: all phases, full lm_eval (default)
+#
 # Examples:
+#   # Quick 1-minute evaluation for fast iteration:
+#   CHECKPOINT_DIR=./outputs/checkpoint/step-1000 \
+#   CONFIG_FILE=./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_10b_nvidia_4x_a100_40GBmem.toml \
+#   PRESET=1min \
+#   ./scripts/eval/run_eval_moe.sh
+#
+#   # 5-minute evaluation for ablation studies:
+#   CHECKPOINT_DIR=./outputs/checkpoint/step-1000 \
+#   CONFIG_FILE=./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_10b_nvidia_4x_a100_40GBmem.toml \
+#   PRESET=5min \
+#   ./scripts/eval/run_eval_moe.sh
+#
+#   # Full evaluation (default):
 #   CHECKPOINT_DIR=./outputs/checkpoint/step-1000 \
 #   CONFIG_FILE=./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_10b_nvidia_4x_a100_40GBmem.toml \
 #   ./scripts/eval/run_eval_moe.sh
@@ -141,6 +162,11 @@ if [ -n "${OUTPUT_DIR}" ]; then
     ARGS="${ARGS} --output_dir ${OUTPUT_DIR}"
 fi
 
+# Add preset if set
+if [ -n "${PRESET}" ]; then
+    ARGS="${ARGS} --preset ${PRESET}"
+fi
+
 # Add skip_lm_eval flag if set
 if [ "${SKIP_LM_EVAL}" = "1" ]; then
     ARGS="${ARGS} --skip_lm_eval"
@@ -175,10 +201,11 @@ echo "============================================="
 echo "Checkpoint: ${CHECKPOINT_DIR}"
 echo "Config:     ${CONFIG_FILE}"
 echo "Output:     ${OUTPUT_DIR:-(auto: {dump_folder}/eval)}"
+echo "Preset:     ${PRESET:-full (default)}"
 echo "Skip lm_eval: ${SKIP_LM_EVAL:-0}"
 echo "lm_eval only: ${LM_EVAL_ONLY:-0}"
-echo "lm_eval tasks: ${LM_EVAL_TASKS:-mmlu hellaswag arc_easy (default)}"
-echo "lm_eval limit: ${LM_EVAL_LIMIT:-all (full dataset)}"
+echo "lm_eval tasks: ${LM_EVAL_TASKS:-(from preset)}"
+echo "lm_eval limit: ${LM_EVAL_LIMIT:-(from preset)}"
 echo "Seed:       ${SEED:-1337 (default)}"
 echo "GPUs:       ${NGPU} (required: ${MIN_GPUS}, available: ${AVAILABLE_GPUS})"
 echo "Parallelism: EP=${EP_DEGREE}, TP=${TP_DEGREE}, PP=${PP_DEGREE}"

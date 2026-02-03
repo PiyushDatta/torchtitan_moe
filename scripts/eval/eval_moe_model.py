@@ -161,6 +161,94 @@ class EvalResults:
         }
 
 
+@dataclass
+class EvalPreset:
+    """Configuration preset for evaluation speed/thoroughness tradeoff."""
+
+    name: str
+    description: str
+    # Routing evaluation
+    routing_samples: int
+    routing_seq_len: int
+    skip_routing: bool = False
+    # Inference performance
+    perf_warmup: int = 3
+    perf_iterations: int = 10
+    perf_max_tokens: int = 128
+    skip_performance: bool = False
+    # lm_eval
+    lm_eval_tasks: list[str] | None = None
+    lm_eval_limit: int | None = None
+    skip_lm_eval: bool = False
+
+
+# Preset configurations for different evaluation durations
+# Timing estimates based on ~1.4s/routing sample, ~5s/warmup iter (16 tokens),
+# ~8s/benchmark iter (16 tokens), scaling linearly with token count
+EVAL_PRESETS: dict[str, EvalPreset] = {
+    "30s": EvalPreset(
+        name="30s",
+        description="Ultra-quick sanity check (~30 seconds)",
+        routing_samples=10,
+        routing_seq_len=256,
+        skip_performance=True,
+        skip_lm_eval=True,
+    ),
+    "1min": EvalPreset(
+        name="1min",
+        description="Quick sanity check (~1 minute)",
+        routing_samples=10,
+        routing_seq_len=256,
+        perf_warmup=1,
+        perf_iterations=1,
+        perf_max_tokens=16,
+        lm_eval_tasks=["hellaswag"],
+        lm_eval_limit=5,
+    ),
+    "5min": EvalPreset(
+        name="5min",
+        description="Fast comparison (~5 minutes)",
+        routing_samples=30,
+        routing_seq_len=256,
+        perf_warmup=1,
+        perf_iterations=3,
+        perf_max_tokens=32,
+        lm_eval_tasks=["hellaswag"],
+        lm_eval_limit=20,
+    ),
+    "15min": EvalPreset(
+        name="15min",
+        description="Moderate evaluation (~15 minutes)",
+        routing_samples=50,
+        routing_seq_len=512,
+        perf_warmup=2,
+        perf_iterations=5,
+        perf_max_tokens=64,
+        lm_eval_tasks=["hellaswag"],
+        lm_eval_limit=100,
+    ),
+    "full": EvalPreset(
+        name="full",
+        description="Full evaluation (default, may take 30+ minutes)",
+        routing_samples=100,
+        routing_seq_len=512,
+        perf_warmup=3,
+        perf_iterations=10,
+        perf_max_tokens=128,
+        lm_eval_tasks=["mmlu", "hellaswag", "arc_easy"],
+        lm_eval_limit=None,  # No limit
+    ),
+}
+
+
+def get_preset(name: str) -> EvalPreset:
+    """Get an evaluation preset by name."""
+    if name not in EVAL_PRESETS:
+        valid = ", ".join(EVAL_PRESETS.keys())
+        raise ValueError(f"Unknown preset '{name}'. Valid presets: {valid}")
+    return EVAL_PRESETS[name]
+
+
 # =============================================================================
 # Routing Metrics Module
 # =============================================================================
@@ -832,16 +920,43 @@ class MoEEvaluator:
         lm_eval_only: bool = False,
         lm_eval_tasks: list[str] | None = None,
         lm_eval_limit: int | None = None,
+        preset: str | None = None,
     ) -> EvalResults:
-        """Run full evaluation suite."""
+        """Run full evaluation suite.
+
+        Args:
+            output_dir: Directory to save results
+            skip_lm_eval: Skip lm_eval benchmark (overrides preset)
+            lm_eval_only: Only run lm_eval
+            lm_eval_tasks: Override lm_eval tasks from preset
+            lm_eval_limit: Override lm_eval limit from preset
+            preset: Evaluation preset (1min, 5min, 15min, full)
+        """
+        # Get preset configuration
+        p = get_preset(preset or "full")
+        self.log.info(f"Using preset: {p.name} - {p.description}")
+
+        # Override preset with explicit flags
+        do_skip_lm_eval = skip_lm_eval or p.skip_lm_eval
+        do_skip_perf = p.skip_performance
+        do_skip_routing = p.skip_routing
+
+        # Use explicit args if provided, otherwise use preset
+        tasks = lm_eval_tasks if lm_eval_tasks else p.lm_eval_tasks
+        limit = lm_eval_limit if lm_eval_limit is not None else p.lm_eval_limit
+
         eval_start_time = time.time()
         results = EvalResults()
 
         phases = [
-            ("1/4", "Routing efficiency", not lm_eval_only, lambda: self._eval_routing(results)),
-            ("2/4", "Inference performance", not lm_eval_only, lambda: self._eval_performance(results)),
-            ("3/4", "Computational cost", not lm_eval_only, lambda: self._eval_cost(results)),
-            ("4/4", "lm_eval", not skip_lm_eval, lambda: self._eval_lm_eval(results, output_dir, lm_eval_tasks, lm_eval_limit)),
+            ("1/4", "Routing efficiency", not lm_eval_only and not do_skip_routing,
+             lambda: self._eval_routing(results, p.routing_samples, p.routing_seq_len)),
+            ("2/4", "Inference performance", not lm_eval_only and not do_skip_perf,
+             lambda: self._eval_performance(results, p.perf_warmup, p.perf_iterations, p.perf_max_tokens)),
+            ("3/4", "Computational cost", not lm_eval_only,
+             lambda: self._eval_cost(results)),
+            ("4/4", "lm_eval", not do_skip_lm_eval,
+             lambda: self._eval_lm_eval(results, output_dir, tasks, limit)),
         ]
 
         for phase_num, phase_name, should_run, phase_fn in phases:
@@ -866,11 +981,15 @@ class MoEEvaluator:
 
         return results
 
-    def _eval_routing(self, results: EvalResults):
-        results.routing_stats = self.evaluate_routing_efficiency(num_samples=100, seq_len=512)
+    def _eval_routing(self, results: EvalResults, num_samples: int = 100, seq_len: int = 512):
+        results.routing_stats = self.evaluate_routing_efficiency(num_samples=num_samples, seq_len=seq_len)
 
-    def _eval_performance(self, results: EvalResults):
-        perf = self.evaluate_inference_performance(max_new_tokens=128, num_warmup=3, num_iterations=10)
+    def _eval_performance(self, results: EvalResults, num_warmup: int = 3, num_iterations: int = 10, max_new_tokens: int = 128):
+        perf = self.evaluate_inference_performance(
+            max_new_tokens=max_new_tokens,
+            num_warmup=num_warmup,
+            num_iterations=num_iterations,
+        )
         results.latency_ms = perf["latency_ms"]
         results.throughput_tokens_per_sec = perf["throughput_tokens_per_sec"]
         results.memory_allocated_gb = perf["memory_allocated_gb"]
@@ -978,9 +1097,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint_dir", type=str, required=True, help="Path to checkpoint directory")
     parser.add_argument("--config_file", type=str, required=True, help="Path to training config TOML file")
     parser.add_argument("--output_dir", type=str, default=None, help="Directory to save results")
+    parser.add_argument("--preset", type=str, default=None, choices=["30s", "1min", "5min", "15min", "full"],
+                        help="Evaluation preset: 30s (ultra-quick), 1min, 5min, 15min, full (default)")
     parser.add_argument("--skip_lm_eval", action="store_true", help="Skip lm_eval benchmark")
     parser.add_argument("--lm_eval_only", action="store_true", help="Only run lm_eval")
-    parser.add_argument("--lm_eval_tasks", type=str, nargs="+", default=["mmlu", "hellaswag", "arc_easy"])
+    parser.add_argument("--lm_eval_tasks", type=str, nargs="+", default=None,
+                        help="Override lm_eval tasks (default: from preset)")
     parser.add_argument("--lm_eval_limit", type=int, default=None, help="Limit examples per task")
     parser.add_argument("--seed", type=int, default=1337, help="Random seed")
     return parser.parse_args()
@@ -1021,6 +1143,7 @@ def main():
             lm_eval_only=args.lm_eval_only,
             lm_eval_tasks=args.lm_eval_tasks,
             lm_eval_limit=args.lm_eval_limit,
+            preset=args.preset,
         )
 
         if evaluator.rank == 0 and results.walltime_seconds:

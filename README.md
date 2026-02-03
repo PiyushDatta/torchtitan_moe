@@ -47,6 +47,9 @@
 ## Command to run training script (multi-node)
 1. [Multi-Node Training](#multi-node-training)
 
+## Evaluation system
+1. Read `torchtitan_moe/scripts/eval/EVAL_README.md`
+
 ~~~~~~~~~~~~
 ## torchtitan_moe fork change 1 end
 ~~~~~~~~~~~~

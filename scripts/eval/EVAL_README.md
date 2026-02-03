@@ -37,16 +37,39 @@ These scripts provide comprehensive evaluation of MoE (Mixture of Experts) model
 
 ## Usage
 
-### Quick Start (Skip lm_eval)
+### Evaluation Presets (Recommended for Ablation Studies)
+
+Use presets to quickly compare models with different time budgets:
+
+| Preset | Duration | What it runs |
+|--------|----------|--------------|
+| `30s` | ~30 seconds | Routing only (10 samples), no inference/lm_eval |
+| `1min` | ~1 minute | Routing (10 samples) + inference (1 iter, 16 tokens) + lm_eval (hellaswag, 5 samples) |
+| `5min` | ~5 minutes | Routing (30 samples) + inference (3 iters, 32 tokens) + lm_eval (hellaswag, 20 samples) |
+| `15min` | ~15 minutes | Routing (50 samples) + inference (5 iters, 64 tokens) + lm_eval (hellaswag, 100 samples) |
+| `full` | 30+ minutes | Complete evaluation with full lm_eval (mmlu, hellaswag, arc_easy, no limit) |
 
 ```bash
+# Ultra-quick 30-second routing check
 CHECKPOINT_DIR=./outputs/checkpoint/step-1000 \
 CONFIG_FILE=./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_10b_nvidia_4x_a100_40GBmem.toml \
-SKIP_LM_EVAL=1 \
+PRESET=30s \
+./scripts/eval/run_eval_moe.sh
+
+# 5-minute evaluation for ablation studies
+PRESET=5min \
+CHECKPOINT_DIR=./outputs/checkpoint/step-1000 \
+CONFIG_FILE=./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_10b_nvidia_4x_a100_40GBmem.toml \
+./scripts/eval/run_eval_moe.sh
+
+# 15-minute moderate evaluation with basic lm_eval
+PRESET=15min \
+CHECKPOINT_DIR=./outputs/checkpoint/step-1000 \
+CONFIG_FILE=./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_10b_nvidia_4x_a100_40GBmem.toml \
 ./scripts/eval/run_eval_moe.sh
 ```
 
-### Full Evaluation with lm_eval
+### Full Evaluation (Default)
 
 ```bash
 CHECKPOINT_DIR=./outputs/checkpoint/step-1000 \
@@ -60,8 +83,8 @@ CONFIG_FILE=./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_10b_nvidia
 torchrun --nproc_per_node=4 scripts/eval/eval_moe_model.py \
     --checkpoint_dir ./outputs/checkpoint/step-1000 \
     --config_file ./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_10b_nvidia_4x_a100_40GBmem.toml \
-    --output_dir ./eval_results \
-    --skip_lm_eval
+    --preset 5min \
+    --output_dir ./eval_results
 ```
 
 ### Custom Number of GPUs
@@ -281,10 +304,11 @@ torchrun --nproc_per_node=4 scripts/eval/eval_moe_model.py \
 | CHECKPOINT_DIR | (required) | Path to checkpoint directory |
 | CONFIG_FILE | (required) | Path to training config TOML |
 | OUTPUT_DIR | {dump_folder}/eval | Where to save results (uses dump_folder from config if not set) |
-| SKIP_LM_EVAL | 0 | Set to 1 to skip lm_eval |
+| PRESET | full | Evaluation preset: 30s, 1min, 5min, 15min, full |
+| SKIP_LM_EVAL | 0 | Set to 1 to skip lm_eval (overrides preset) |
 | LM_EVAL_ONLY | 0 | Set to 1 to only run lm_eval (skip routing/inference analysis) |
-| LM_EVAL_TASKS | "mmlu hellaswag arc_easy" | Space-separated list of tasks (use quotes!) |
-| LM_EVAL_LIMIT | all | Limit examples per task (e.g., 100 for quick testing) |
+| LM_EVAL_TASKS | (from preset) | Space-separated list of tasks (overrides preset) |
+| LM_EVAL_LIMIT | (from preset) | Limit examples per task (overrides preset) |
 | SEED | 1337 | Random seed for reproducibility |
 | NGPU | auto-detect | Number of GPUs to use (auto-detects from config parallelism, set to 0 for CPU) |
 
