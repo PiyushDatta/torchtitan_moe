@@ -3,7 +3,7 @@
 Comprehensive MoE Model Evaluation Script (Distributed)
 
 Evaluates a trained MoE model across multiple dimensions:
-1. Model accuracy (via lm_eval with HuggingFace conversion)
+1. Model accuracy (via lm_eval - runs directly on torchtitan model)
 2. Computational cost (FLOPs, MFU)
 3. Inference performance (latency, throughput)
 4. Routing efficiency (load balance, expert utilization)
@@ -34,13 +34,11 @@ import dataclasses
 import importlib
 import json
 import os
-import shutil
-import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import torch
 import torch.distributed as dist
@@ -60,6 +58,56 @@ from torchtitan.tools.utils import device_module, device_type
 
 
 # =============================================================================
+# Rank-Aware Logging
+# =============================================================================
+
+
+class RankLogger:
+    """Wrapper for rank-aware logging - only logs on rank 0."""
+
+    def __init__(self, rank: int = 0):
+        self.rank = rank
+
+    def _should_log(self) -> bool:
+        return self.rank == 0
+
+    def info(self, msg: str):
+        if self._should_log():
+            logger.info(msg)
+
+    def warning(self, msg: str):
+        if self._should_log():
+            logger.warning(msg)
+
+    def error(self, msg: str):
+        # Errors are logged on all ranks for debugging
+        logger.error(msg)
+
+    def debug(self, msg: str):
+        if self._should_log():
+            logger.debug(msg)
+
+
+# Global rank logger - initialized after distributed setup
+_rank_logger: RankLogger | None = None
+
+
+def get_logger() -> RankLogger:
+    """Get the rank-aware logger."""
+    global _rank_logger
+    if _rank_logger is None:
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        _rank_logger = RankLogger(rank)
+    return _rank_logger
+
+
+def init_rank_logger(rank: int):
+    """Initialize the rank logger with the given rank."""
+    global _rank_logger
+    _rank_logger = RankLogger(rank)
+
+
+# =============================================================================
 # Data Classes
 # =============================================================================
 
@@ -68,24 +116,18 @@ from torchtitan.tools.utils import device_module, device_type
 class EvalResults:
     """Container for all evaluation results."""
 
-    # Routing stats
     routing_stats: dict[str, Any] | None = None
-    # Inference performance
     latency_ms: float | None = None
     throughput_tokens_per_sec: float | None = None
     memory_allocated_gb: float | None = None
     memory_reserved_gb: float | None = None
-    # Computational cost
     total_flops: int | None = None
     tflops: float | None = None
     active_params_b: float | None = None
     num_flops_per_token: float | None = None
     gpu_peak_flops: float | None = None
-    # Model accuracy (if lm_eval is run)
     lm_eval_results: dict[str, Any] | None = None
-    # Walltime
     walltime_seconds: float | None = None
-    # Config and model args for reproducibility
     config: dict[str, Any] | None = None
     model_args: dict[str, Any] | None = None
     checkpoint_dir: str | None = None
@@ -120,116 +162,104 @@ class EvalResults:
 
 
 # =============================================================================
-# Routing Metrics Calculation
+# Routing Metrics Module
 # =============================================================================
 
 
-def calculate_gini_coefficient(loads: list[float]) -> float:
-    """Calculate Gini coefficient (0 = perfect equality, 1 = perfect inequality)."""
-    sorted_loads = sorted(loads)
-    n = len(sorted_loads)
-    cumsum = sum((idx + 1) * val for idx, val in enumerate(sorted_loads))
-    total = sum(sorted_loads)
-    if total > 0:
-        return (2 * cumsum) / (n * total) - (n + 1) / n
-    return 0.0
+class RoutingMetrics:
+    """Module for calculating MoE routing efficiency metrics."""
 
+    @staticmethod
+    def gini_coefficient(loads: list[float]) -> float:
+        """Calculate Gini coefficient (0 = perfect equality, 1 = perfect inequality)."""
+        sorted_loads = sorted(loads)
+        n = len(sorted_loads)
+        cumsum = sum((idx + 1) * val for idx, val in enumerate(sorted_loads))
+        total = sum(sorted_loads)
+        return (2 * cumsum) / (n * total) - (n + 1) / n if total > 0 else 0.0
 
-def calculate_routing_metrics(tokens_per_expert) -> dict[str, Any]:
-    """Calculate all routing metrics for a single MoE layer."""
-    mean_load = float(tokens_per_expert.mean())
-    std_load = float(tokens_per_expert.std())
-    max_load = int(tokens_per_expert.max())
-    min_load = int(tokens_per_expert.min())
+    @staticmethod
+    def calculate_layer_metrics(tokens_per_expert) -> dict[str, Any]:
+        """Calculate all routing metrics for a single MoE layer."""
+        mean_load = float(tokens_per_expert.mean())
+        std_load = float(tokens_per_expert.std())
+        num_experts = len(tokens_per_expert)
+        active_experts = int((tokens_per_expert > 0).sum())
 
-    # Coefficient of variation (lower = better balance)
-    cv = std_load / mean_load if mean_load > 0 else 0.0
-    # Expert utilization rate
-    num_experts = len(tokens_per_expert)
-    active_experts = int((tokens_per_expert > 0).sum())
-    utilization_rate = active_experts / num_experts
-    # Gini coefficient
-    gini = calculate_gini_coefficient(tokens_per_expert.tolist())
+        return {
+            "total_tokens_routed": int(tokens_per_expert.sum()),
+            "num_experts": num_experts,
+            "mean_tokens_per_expert": mean_load,
+            "std_tokens_per_expert": std_load,
+            "max_tokens_per_expert": int(tokens_per_expert.max()),
+            "min_tokens_per_expert": int(tokens_per_expert.min()),
+            "coefficient_of_variation": std_load / mean_load if mean_load > 0 else 0.0,
+            "expert_utilization_rate": active_experts / num_experts,
+            "gini_coefficient": RoutingMetrics.gini_coefficient(tokens_per_expert.tolist()),
+            "tokens_per_expert_distribution": tokens_per_expert.tolist(),
+        }
 
-    return {
-        "total_tokens_routed": int(tokens_per_expert.sum()),
-        "num_experts": num_experts,
-        "mean_tokens_per_expert": mean_load,
-        "std_tokens_per_expert": std_load,
-        "max_tokens_per_expert": max_load,
-        "min_tokens_per_expert": min_load,
-        "coefficient_of_variation": cv,
-        "expert_utilization_rate": utilization_rate,
-        "gini_coefficient": gini,
-        "tokens_per_expert_distribution": tokens_per_expert.tolist(),
-    }
+    @staticmethod
+    def aggregate_stats(layer_stats: dict[str, dict]) -> dict[str, Any]:
+        """Calculate aggregate statistics across all MoE layers."""
+        if not layer_stats:
+            return {"num_moe_layers": 0}
 
+        cvs = [s["coefficient_of_variation"] for s in layer_stats.values()]
+        ginis = [s["gini_coefficient"] for s in layer_stats.values()]
+        utils_rates = [s["expert_utilization_rate"] for s in layer_stats.values()]
 
-def calculate_aggregate_routing_stats(layer_stats: dict[str, dict]) -> dict[str, Any]:
-    """Calculate aggregate statistics across all MoE layers."""
-    all_cvs = [s["coefficient_of_variation"] for s in layer_stats.values()]
-    all_ginis = [s["gini_coefficient"] for s in layer_stats.values()]
-    all_utils = [s["expert_utilization_rate"] for s in layer_stats.values()]
-
-    return {
-        "num_moe_layers": len(layer_stats),
-        "avg_coefficient_of_variation": sum(all_cvs) / len(all_cvs) if all_cvs else 0,
-        "avg_gini_coefficient": sum(all_ginis) / len(all_ginis) if all_ginis else 0,
-        "avg_expert_utilization_rate": (
-            sum(all_utils) / len(all_utils) if all_utils else 0
-        ),
-    }
+        return {
+            "num_moe_layers": len(layer_stats),
+            "avg_coefficient_of_variation": sum(cvs) / len(cvs),
+            "avg_gini_coefficient": sum(ginis) / len(ginis),
+            "avg_expert_utilization_rate": sum(utils_rates) / len(utils_rates),
+        }
 
 
 # =============================================================================
-# FLOPs Calculation
+# FLOPs Calculation Module
 # =============================================================================
 
 
-def get_theoretical_flops(
-    model, model_args, seq_len: int
-) -> tuple[int | None, float | None]:
-    """Get theoretical FLOPs from model_args if available."""
-    if not hasattr(model_args, "get_nparams_and_flops"):
-        return None, None
+class FlopsCalculator:
+    """Module for calculating computational cost (FLOPs)."""
 
-    try:
-        _, num_flops_per_token = model_args.get_nparams_and_flops(model, seq_len)
-        total_flops = num_flops_per_token * seq_len
-        logger.info(
-            f"Theoretical FLOPs per token from model_args: {num_flops_per_token:.2e}"
-        )
-        return int(total_flops), num_flops_per_token
-    except Exception as e:
-        logger.warning(f"Could not get theoretical FLOPs from model_args: {e}")
-        return None, None
+    @staticmethod
+    def from_model_args(model, model_args, seq_len: int) -> tuple[int | None, float | None]:
+        """Get theoretical FLOPs from model_args if available."""
+        if not hasattr(model_args, "get_nparams_and_flops"):
+            return None, None
 
+        try:
+            _, num_flops_per_token = model_args.get_nparams_and_flops(model, seq_len)
+            total_flops = num_flops_per_token * seq_len
+            get_logger().info(f"Theoretical FLOPs per token: {num_flops_per_token:.2e}")
+            return int(total_flops), num_flops_per_token
+        except Exception as e:
+            get_logger().warning(f"Could not get theoretical FLOPs: {e}")
+            return None, None
 
-def measure_flops_with_counter(model, input_ids, attention_mask) -> int | None:
-    """Measure FLOPs using PyTorch's FlopCounterMode."""
-    try:
-        flop_counter = FlopCounterMode(display=False)
-        with flop_counter:
-            _ = model(input_ids, attention_masks=attention_mask)
-        measured = flop_counter.get_total_flops()
-        logger.info(f"Measured FLOPs via FlopCounterMode: {measured:.2e}")
-        return measured
-    except Exception as e:
-        logger.warning(
-            f"FlopCounterMode failed (likely due to flex_attention): {type(e).__name__}"
-        )
-        logger.info("Using theoretical FLOPs from model_args instead")
-        return None
+    @staticmethod
+    def measure_with_counter(model, input_ids, attention_mask) -> int | None:
+        """Measure FLOPs using PyTorch's FlopCounterMode."""
+        try:
+            flop_counter = FlopCounterMode(display=False)
+            with flop_counter:
+                _ = model(input_ids, attention_masks=attention_mask)
+            measured = flop_counter.get_total_flops()
+            get_logger().info(f"Measured FLOPs: {measured:.2e}")
+            return measured
+        except Exception as e:
+            get_logger().warning(f"FlopCounterMode failed: {type(e).__name__}")
+            return None
 
-
-def estimate_flops_from_params(total_params: int, seq_len: int) -> int:
-    """Rough FLOP estimate based on parameter count."""
-    # Rough estimate: 2 * params * seq_len for forward pass
-    total_flops = 2 * total_params * seq_len
-    logger.warning(
-        f"Using rough FLOP estimate based on parameter count: {total_flops / 1e12:.2f} TFLOPs"
-    )
-    return total_flops
+    @staticmethod
+    def estimate_from_params(total_params: int, seq_len: int) -> int:
+        """Rough FLOP estimate based on parameter count."""
+        total_flops = 2 * total_params * seq_len
+        get_logger().warning(f"Using rough FLOP estimate: {total_flops / 1e12:.2f} TFLOPs")
+        return total_flops
 
 
 # =============================================================================
@@ -237,14 +267,12 @@ def estimate_flops_from_params(total_params: int, seq_len: int) -> int:
 # =============================================================================
 
 
-def prepare_input_ids(
-    tokenizer, prompts: list[str] | None, vocab_size: int, device
-) -> torch.Tensor:
+def prepare_input_ids(tokenizer, prompts: list[str] | None, vocab_size: int, device) -> torch.Tensor:
     """Prepare input token IDs from prompts or generate random tokens."""
+    log = get_logger()
+
     if tokenizer is None:
-        logger.warning(
-            "No tokenizer available. Using random token IDs for inference benchmark."
-        )
+        log.warning("No tokenizer. Using random token IDs for benchmark.")
         return torch.randint(0, vocab_size, (1, 64), device=device)
 
     if prompts is None:
@@ -259,24 +287,123 @@ def prepare_input_ids(
         max_len = max(len(e) for e in encoded)
         pad_id = getattr(tokenizer, "pad_id", 0)
         padded = [e + [pad_id] * (max_len - len(e)) for e in encoded]
-        logger.info(f"Tokenized {len(prompts)} prompts, max length: {max_len}")
+        log.info(f"Tokenized {len(prompts)} prompts, max length: {max_len}")
         return torch.tensor(padded, device=device)
     except (TypeError, AttributeError) as e:
-        logger.warning(f"Tokenizer encode failed: {e}. Using random token IDs.")
+        log.warning(f"Tokenizer encode failed: {e}. Using random IDs.")
         return torch.randint(0, vocab_size, (1, 64), device=device)
 
 
 # =============================================================================
-# Results Formatting
+# Results Formatting & Printing
 # =============================================================================
 
 
-def format_walltime(seconds: float) -> str:
-    """Format walltime as HH:MM:SS.ss."""
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = seconds % 60
-    return f"{hours:02d}:{minutes:02d}:{secs:05.2f}"
+class ResultsPrinter:
+    """Module for printing evaluation results (rank 0 only)."""
+
+    def __init__(self, rank: int):
+        self.rank = rank
+
+    def _print(self, *args, **kwargs):
+        """Print only on rank 0."""
+        if self.rank == 0:
+            print(*args, **kwargs)
+
+    @staticmethod
+    def format_walltime(seconds: float) -> str:
+        """Format walltime as HH:MM:SS.ss."""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = seconds % 60
+        return f"{hours:02d}:{minutes:02d}:{secs:05.2f}"
+
+    def print_section(self, title: str, items: list[tuple[str, Any]]):
+        """Print a section with title and key-value items."""
+        self._print(f"\n[{title}]")
+        self._print("-" * 80)
+        for label, value in items:
+            if value is not None:
+                self._print(f"  {label:<35} {value}")
+
+    def print_routing_summary(self, routing_stats: dict | None):
+        """Print routing efficiency summary."""
+        if not routing_stats:
+            self.print_section("ROUTING EFFICIENCY", [("Status", "No data available")])
+            return
+
+        agg = routing_stats.get("aggregate", {})
+        self.print_section("ROUTING EFFICIENCY", [
+            ("Average Coefficient of Variation:", f"{agg.get('avg_coefficient_of_variation', 0):.4f}"),
+            ("Average Gini Coefficient:", f"{agg.get('avg_gini_coefficient', 0):.4f}"),
+            ("Average Expert Utilization:", f"{agg.get('avg_expert_utilization_rate', 0):.2%}"),
+            ("Number of MoE Layers:", agg.get('num_moe_layers', 0)),
+        ])
+
+    def print_performance_summary(self, results: EvalResults):
+        """Print inference performance summary."""
+        if results.latency_ms is None:
+            self.print_section("INFERENCE PERFORMANCE", [("Status", "No data available")])
+            return
+
+        self.print_section("INFERENCE PERFORMANCE", [
+            ("Latency:", f"{results.latency_ms:.2f} ms"),
+            ("Throughput:", f"{results.throughput_tokens_per_sec:.2f} tokens/s"),
+            ("Memory Allocated:", f"{results.memory_allocated_gb:.2f} GB"),
+            ("Memory Reserved:", f"{results.memory_reserved_gb:.2f} GB"),
+        ])
+
+    def print_cost_summary(self, results: EvalResults):
+        """Print computational cost summary."""
+        items = []
+        if results.tflops is not None:
+            items.append(("Total FLOPs:", f"{results.tflops:.2f} TFLOPs"))
+        if results.active_params_b is not None:
+            items.append(("Active Parameters:", f"{results.active_params_b:.2f}B"))
+        if results.num_flops_per_token:
+            items.append(("FLOPs per Token:", f"{results.num_flops_per_token:.2e}"))
+
+        if items:
+            self.print_section("COMPUTATIONAL COST", items)
+
+    def print_lm_eval_summary(self, lm_eval_results: dict | None):
+        """Print lm_eval results summary."""
+        if not lm_eval_results:
+            return
+
+        self._print("\n[MODEL ACCURACY (lm_eval)]")
+        self._print("-" * 80)
+        for task, metrics in lm_eval_results.items():
+            if isinstance(metrics, dict):
+                self._print(f"  {task}:")
+                for metric, value in metrics.items():
+                    self._print(f"    {metric}: {value}")
+
+    def print_full_summary(self, results: EvalResults):
+        """Print complete evaluation summary."""
+        self._print("\n" + "=" * 80)
+        self._print("EVALUATION SUMMARY")
+        self._print("=" * 80)
+
+        self.print_routing_summary(results.routing_stats)
+        self.print_performance_summary(results)
+        self.print_cost_summary(results)
+        self.print_lm_eval_summary(results.lm_eval_results)
+
+        if results.walltime_seconds:
+            self.print_section("WALLTIME", [
+                ("Total Time:", f"{self.format_walltime(results.walltime_seconds)} ({results.walltime_seconds:.2f}s)")
+            ])
+
+        if results.output_file:
+            self.print_section("OUTPUT", [("Results File:", results.output_file)])
+
+        self._print("\n" + "=" * 80)
+
+
+# =============================================================================
+# Config Extraction
+# =============================================================================
 
 
 def extract_config_for_results(job_config) -> dict[str, Any]:
@@ -306,114 +433,6 @@ def extract_config_for_results(job_config) -> dict[str, Any]:
 
 
 # =============================================================================
-# Summary Printing
-# =============================================================================
-
-
-def print_routing_summary(routing_stats: dict | None):
-    """Print routing efficiency summary."""
-    print("\n[ROUTING EFFICIENCY]")
-    print("-" * 80)
-    if not routing_stats:
-        print("  No routing data available")
-        return
-
-    agg = routing_stats.get("aggregate", {})
-    print(
-        f"  Average Coefficient of Variation: {agg.get('avg_coefficient_of_variation', 0):.4f}"
-    )
-    print(
-        f"  Average Gini Coefficient:         {agg.get('avg_gini_coefficient', 0):.4f}"
-    )
-    print(
-        f"  Average Expert Utilization:       {agg.get('avg_expert_utilization_rate', 0):.2%}"
-    )
-    print(f"  Number of MoE Layers:             {agg.get('num_moe_layers', 0)}")
-
-
-def print_performance_summary(results: EvalResults):
-    """Print inference performance summary."""
-    print("\n[INFERENCE PERFORMANCE]")
-    print("-" * 80)
-    if results.latency_ms is None:
-        print("  No inference performance data available")
-        return
-
-    print(f"  Latency:                          {results.latency_ms:.2f} ms")
-    print(
-        f"  Throughput:                       {results.throughput_tokens_per_sec:.2f} tokens/s"
-    )
-    print(f"  Memory Allocated:                 {results.memory_allocated_gb:.2f} GB")
-    print(f"  Memory Reserved:                  {results.memory_reserved_gb:.2f} GB")
-
-
-def print_cost_summary(results: EvalResults):
-    """Print computational cost summary."""
-    print("\n[COMPUTATIONAL COST]")
-    print("-" * 80)
-    if results.tflops is not None:
-        print(f"  Total FLOPs:                      {results.tflops:.2f} TFLOPs")
-    if results.active_params_b is not None:
-        print(f"  Active Parameters:                {results.active_params_b:.2f}B")
-    if results.num_flops_per_token:
-        print(f"  FLOPs per Token:                  {results.num_flops_per_token:.2e}")
-    if results.gpu_peak_flops:
-        print(f"  GPU Peak FLOPs:                   {results.gpu_peak_flops:.2e}")
-
-
-def print_lm_eval_summary(lm_eval_results: dict | None):
-    """Print lm_eval results summary."""
-    if not lm_eval_results:
-        return
-
-    print("\n[MODEL ACCURACY (lm_eval)]")
-    print("-" * 80)
-    for task, metrics in lm_eval_results.items():
-        if isinstance(metrics, dict):
-            print(f"  {task}:")
-            for metric, value in metrics.items():
-                print(f"    {metric}: {value}")
-
-
-def print_walltime_summary(walltime_seconds: float | None):
-    """Print walltime summary."""
-    if walltime_seconds is None:
-        return
-
-    print("\n[WALLTIME]")
-    print("-" * 80)
-    print(
-        f"  Total Time:                       {format_walltime(walltime_seconds)} ({walltime_seconds:.2f} seconds)"
-    )
-
-
-def print_output_summary(output_file: str | None):
-    """Print output file location."""
-    if output_file is None:
-        return
-
-    print("\n[OUTPUT]")
-    print("-" * 80)
-    print(f"  Results File: {output_file}")
-
-
-def print_full_summary(results: EvalResults):
-    """Print complete evaluation summary."""
-    print("\n" + "=" * 80)
-    print("EVALUATION SUMMARY")
-    print("=" * 80)
-
-    print_routing_summary(results.routing_stats)
-    print_performance_summary(results)
-    print_cost_summary(results)
-    print_lm_eval_summary(results.lm_eval_results)
-    print_walltime_summary(results.walltime_seconds)
-    print_output_summary(results.output_file)
-
-    print("\n" + "=" * 80)
-
-
-# =============================================================================
 # MoE Evaluator Class
 # =============================================================================
 
@@ -426,6 +445,12 @@ class MoEEvaluator:
         self._init_logging()
         self._load_config(config_file)
         self._init_environment(seed)
+
+        # Initialize rank-aware logger after distributed setup
+        init_rank_logger(self.rank)
+        self.log = get_logger()
+        self.printer = ResultsPrinter(self.rank)
+
         self._init_model_args()
         self._init_device_monitor()
         self._init_tokenizer()
@@ -438,21 +463,11 @@ class MoEEvaluator:
     def _init_logging(self):
         """Initialize logging and API usage tracking."""
         torch._C._log_api_usage_once("torchtitan.eval_moe_model")
-        import torchtitan
-
-        logger.info(
-            f"torchtitan version: {torchtitan.__version__} "
-            "(0.0.0 means __version__ is not defined correctly)."
-        )
 
     def _load_config(self, config_file: str):
         """Load configuration from TOML file."""
-        logger.info(f"Loading config from {config_file}")
         config_manager = ConfigManager()
-        self.job_config = config_manager.parse_args(
-            [f"--job.config_file={config_file}"]
-        )
-        logger.info(f"Starting evaluation: {self.job_config.job.description}")
+        self.job_config = config_manager.parse_args([f"--job.config_file={config_file}"])
 
         if self.job_config.experimental.custom_import:
             importlib.import_module(self.job_config.experimental.custom_import)
@@ -465,8 +480,6 @@ class MoEEvaluator:
             self._init_distributed_env()
         else:
             self._init_single_process_env(seed)
-
-        logger.info(f"Set random seed to {seed} for reproducibility")
 
     def _init_distributed_env(self):
         """Initialize distributed environment (launched with torchrun)."""
@@ -489,16 +502,11 @@ class MoEEvaluator:
 
     def _init_single_process_env(self, seed: int):
         """Initialize single-process environment (CPU or single GPU)."""
-        logger.warning(
-            "Running in single-process mode. For distributed GPU evaluation, use torchrun."
-        )
-
         if torch.cuda.is_available():
             self.device = torch.device("cuda:0")
             device_module.set_device(self.device)
         else:
             self.device = torch.device("cpu")
-            logger.warning("No CUDA available. Running on CPU (very slow).")
 
         self.rank = 0
         self.world_size = 1
@@ -532,23 +540,14 @@ class MoEEvaluator:
     def _validate_parallelism(self):
         """Validate world_size matches parallelism requirements."""
         p = self.job_config.parallelism
-        ep, tp, pp = (
-            p.expert_parallel_degree,
-            p.tensor_parallel_degree,
-            p.pipeline_parallel_degree,
-        )
+        ep, tp, pp = p.expert_parallel_degree, p.tensor_parallel_degree, p.pipeline_parallel_degree
         min_required = ep * tp * pp
 
         if min_required > self.world_size:
             raise RuntimeError(
                 f"Config requires {min_required} GPUs (EP={ep} x TP={tp} x PP={pp}), "
-                f"but only {self.world_size} processes launched. "
-                f"Use: torchrun --nproc_per_node={min_required} ..."
+                f"but only {self.world_size} processes launched."
             )
-
-        logger.info(
-            f"Parallelism config: EP={ep}, TP={tp}, PP={pp}, world_size={self.world_size}"
-        )
 
     def _init_model_args(self):
         """Initialize model arguments from train spec."""
@@ -559,18 +558,12 @@ class MoEEvaluator:
         self.model_args = self.train_spec.model_args[model_flavor]
         self.model_args.update_from_config(self.job_config)
 
-        logger.info(
-            f"Building {model_name} {model_flavor} with "
-            f"{json.dumps(dataclasses.asdict(self.model_args), indent=2, ensure_ascii=False)}"
-        )
+        self.log.info(f"Building {model_name} {model_flavor}")
 
     def _init_device_monitor(self):
         """Initialize device memory monitor and GPU peak flops."""
         self.device_memory_monitor = build_device_memory_monitor()
-        self.gpu_peak_flops = utils.get_peak_flops(
-            self.device_memory_monitor.device_name
-        )
-        logger.info(f"Peak FLOPS used for computing MFU: {self.gpu_peak_flops:.3e}")
+        self.gpu_peak_flops = utils.get_peak_flops(self.device_memory_monitor.device_name)
 
     def _init_tokenizer(self):
         """Initialize tokenizer from train spec."""
@@ -579,10 +572,6 @@ class MoEEvaluator:
             if self.train_spec.build_tokenizer_fn is not None
             else None
         )
-        if self.tokenizer is not None:
-            logger.info("Tokenizer loaded successfully")
-        else:
-            logger.warning("No tokenizer available for this model")
 
     # -------------------------------------------------------------------------
     # Model Loading
@@ -590,26 +579,24 @@ class MoEEvaluator:
 
     def _load_model(self) -> torch.nn.Module:
         """Load model from checkpoint with parallelization."""
-        logger.info(f"Loading model from {self.checkpoint_dir}")
+        self.log.info(f"Loading model from {self.checkpoint_dir}")
 
         if not self.checkpoint_dir.exists():
-            raise FileNotFoundError(
-                f"Checkpoint directory not found: {self.checkpoint_dir}"
-            )
+            raise FileNotFoundError(f"Checkpoint directory not found: {self.checkpoint_dir}")
 
         model_dtype = TORCH_DTYPE_MAP[self.job_config.training.dtype]
-        logger.info(f"Using dtype: {model_dtype}")
-        # Create model on meta device
+
         with torch.device("meta"), utils.set_default_dtype(model_dtype):
             model = self.train_spec.model_cls(self.model_args)
+
         if self.is_distributed:
             model = self._load_distributed_model(model)
         else:
             model = self._load_single_process_model(model)
+
         model.eval()
         total_params = sum(p.numel() for p in model.parameters())
-        logger.info(f"Total parameters (this rank): {total_params / 1e9:.2f}B")
-        self._log_memory_usage("after checkpoint load")
+        self.log.info(f"Total parameters (this rank): {total_params / 1e9:.2f}B")
         return model
 
     def _load_distributed_model(self, model: torch.nn.Module) -> torch.nn.Module:
@@ -618,10 +605,7 @@ class MoEEvaluator:
         model_converters.convert(model)
 
         if self.parallel_dims.pp_enabled:
-            raise NotImplementedError(
-                "Pipeline parallel evaluation is not yet supported. "
-                "Please use a config without pipeline parallelism for evaluation."
-            )
+            raise NotImplementedError("Pipeline parallel evaluation is not yet supported.")
 
         if self.train_spec.parallelize_fn is not None:
             self.train_spec.parallelize_fn(model, self.parallel_dims, self.job_config)
@@ -632,22 +616,15 @@ class MoEEvaluator:
             model.init_weights(buffer_device=buffer_device)
         model.train()  # Required for proper DTensor initialization
 
-        self._log_memory_usage("after model init")
         self._load_checkpoint_dcp(model)
         return model
 
     def _load_single_process_model(self, model: torch.nn.Module) -> torch.nn.Module:
         """Load model in single-process mode."""
-        logger.warning(
-            "Loading model in single-process mode. "
-            "For best results, use torchrun with matching parallelism."
-        )
-
         model.to_empty(device=self.device)
         with torch.no_grad():
             model.init_weights()
 
-        self._log_memory_usage("after model init")
         self._load_checkpoint_dcp(model)
         return model
 
@@ -659,19 +636,10 @@ class MoEEvaluator:
 
     def _load_checkpoint_dcp(self, model: torch.nn.Module):
         """Load checkpoint using DCP."""
-        logger.info("Loading checkpoint with DCP (this may take a few minutes)")
+        self.log.info("Loading checkpoint with DCP...")
         state_dict = model.state_dict()
         dcp.load(state_dict, checkpoint_id=str(self.checkpoint_dir))
         model.load_state_dict(state_dict, assign=True)
-
-    def _log_memory_usage(self, context: str):
-        """Log GPU memory usage."""
-        if self.device.type != "cuda":
-            return
-        stats = self.device_memory_monitor.get_peak_stats()
-        logger.info(
-            f"GPU memory {context}: {stats.max_reserved_gib:.2f}GiB ({stats.max_reserved_pct:.2f}%)"
-        )
 
     # -------------------------------------------------------------------------
     # Attention Mask Creation
@@ -694,65 +662,47 @@ class MoEEvaluator:
     # Evaluation Methods
     # -------------------------------------------------------------------------
 
-    def evaluate_routing_efficiency(
-        self, num_samples: int = 100, seq_len: int = 512
-    ) -> dict[str, Any]:
+    def evaluate_routing_efficiency(self, num_samples: int = 100, seq_len: int = 512) -> dict[str, Any]:
         """Evaluate MoE routing efficiency and load balance."""
-        logger.info("Evaluating routing efficiency")
+        self.log.info("Evaluating routing efficiency...")
 
-        self._reset_expert_counters()
-        self._run_routing_inference(num_samples, seq_len)
-        layer_stats = self._collect_layer_routing_stats()
-
-        layer_stats["aggregate"] = calculate_aggregate_routing_stats(
-            {k: v for k, v in layer_stats.items() if k != "aggregate"}
-        )
-
-        agg = layer_stats["aggregate"]
-        logger.info(
-            f"Aggregate routing: avg_cv={agg['avg_coefficient_of_variation']:.3f}, "
-            f"avg_gini={agg['avg_gini_coefficient']:.3f}, "
-            f"avg_util={agg['avg_expert_utilization_rate']:.2%}"
-        )
-
-        return layer_stats
-
-    def _reset_expert_counters(self):
-        """Reset expert token counters for all MoE layers."""
+        # Reset counters
         for layer in self.model.layers.values():
             if hasattr(layer, "moe") and layer.moe is not None:
                 layer.moe.tokens_per_expert.zero_()
 
-    def _run_routing_inference(self, num_samples: int, seq_len: int):
-        """Run inference to collect routing statistics."""
-        with torch.no_grad():
-            for _ in range(num_samples):
-                input_ids = torch.randint(
-                    0, self.model_args.vocab_size, (1, seq_len), device=self.device
-                )
-                attention_mask = self._create_attention_mask(input_ids)
-                _ = self.model(input_ids, attention_masks=attention_mask)
+        # Run inference with progress bar
+        self._run_with_progress(
+            num_samples,
+            lambda: self._routing_inference_step(seq_len),
+            "Routing analysis",
+        )
 
-    def _collect_layer_routing_stats(self) -> dict[str, Any]:
-        """Collect routing statistics from all MoE layers."""
-        stats = {}
+        # Collect stats
+        layer_stats = {}
         for i, layer in enumerate(self.model.layers.values()):
-            if not (hasattr(layer, "moe") and layer.moe is not None):
-                continue
+            if hasattr(layer, "moe") and layer.moe is not None:
+                tokens_per_expert = layer.moe.tokens_per_expert.cpu().numpy()
+                layer_stats[f"layer_{i}"] = RoutingMetrics.calculate_layer_metrics(tokens_per_expert)
 
-            tokens_per_expert = layer.moe.tokens_per_expert.cpu().numpy()
-            layer_metrics = calculate_routing_metrics(tokens_per_expert)
-            stats[f"layer_{i}"] = layer_metrics
+        layer_stats["aggregate"] = RoutingMetrics.aggregate_stats(
+            {k: v for k, v in layer_stats.items() if k != "aggregate"}
+        )
 
-            logger.info(
-                f"Layer {i} routing: mean={layer_metrics['mean_tokens_per_expert']:.1f}, "
-                f"std={layer_metrics['std_tokens_per_expert']:.1f}, "
-                f"cv={layer_metrics['coefficient_of_variation']:.3f}, "
-                f"util={layer_metrics['expert_utilization_rate']:.2%}, "
-                f"gini={layer_metrics['gini_coefficient']:.3f}"
-            )
+        agg = layer_stats["aggregate"]
+        self.log.info(
+            f"Routing: avg_cv={agg.get('avg_coefficient_of_variation', 0):.3f}, "
+            f"avg_gini={agg.get('avg_gini_coefficient', 0):.3f}"
+        )
 
-        return stats
+        return layer_stats
+
+    def _routing_inference_step(self, seq_len: int):
+        """Single routing inference step."""
+        input_ids = torch.randint(0, self.model_args.vocab_size, (1, seq_len), device=self.device)
+        attention_mask = self._create_attention_mask(input_ids)
+        with torch.no_grad():
+            _ = self.model(input_ids, attention_masks=attention_mask)
 
     def evaluate_inference_performance(
         self,
@@ -762,37 +712,14 @@ class MoEEvaluator:
         num_iterations: int = 10,
     ) -> dict[str, float]:
         """Evaluate inference performance (latency, throughput, memory)."""
-        logger.info("Evaluating inference performance")
+        self.log.info("Evaluating inference performance...")
 
-        input_ids = prepare_input_ids(
-            self.tokenizer, prompts, self.model_args.vocab_size, self.device
-        )
+        input_ids = prepare_input_ids(self.tokenizer, prompts, self.model_args.vocab_size, self.device)
 
-        self._run_warmup(input_ids, num_warmup)
-        metrics = self._run_benchmark(input_ids, max_new_tokens, num_iterations)
+        # Warmup
+        self._run_with_progress(num_warmup, lambda: self._generate(input_ids, 32), "Warmup")
 
-        logger.info(
-            f"Latency: {metrics['latency_ms']:.2f}ms, "
-            f"Throughput: {metrics['throughput_tokens_per_sec']:.2f} tokens/s, "
-            f"Memory: {metrics['memory_allocated_gb']:.2f}GB allocated, "
-            f"{metrics['memory_reserved_gb']:.2f}GB reserved"
-        )
-
-        return metrics
-
-    def _run_warmup(self, input_ids: torch.Tensor, num_warmup: int):
-        """Run warmup iterations."""
-        logger.info(f"Warming up with {num_warmup} iterations")
-        with torch.no_grad():
-            for _ in range(num_warmup):
-                _ = self._generate(input_ids, max_new_tokens=32)
-
-    def _run_benchmark(
-        self, input_ids: torch.Tensor, max_new_tokens: int, num_iterations: int
-    ) -> dict[str, float]:
-        """Run benchmark iterations and collect metrics."""
-        logger.info(f"Benchmarking with {num_iterations} iterations")
-
+        # Benchmark
         if self.device.type == "cuda":
             device_module.synchronize()
             device_module.reset_peak_memory_stats()
@@ -800,9 +727,9 @@ class MoEEvaluator:
         start_time = time.time()
         total_tokens = 0
 
-        with torch.no_grad():
-            for _ in range(num_iterations):
-                generated = self._generate(input_ids, max_new_tokens=max_new_tokens)
+        for _ in self._progress_iterator(num_iterations, "Benchmark"):
+            with torch.no_grad():
+                generated = self._generate(input_ids, max_new_tokens)
                 total_tokens += generated.shape[1] - input_ids.shape[1]
 
         if self.device.type == "cuda":
@@ -810,42 +737,36 @@ class MoEEvaluator:
 
         total_time = time.time() - start_time
 
-        if self.device.type == "cuda":
-            mem_alloc = device_module.max_memory_allocated() / 1e9
-            mem_reserved = device_module.max_memory_reserved() / 1e9
-        else:
-            mem_alloc, mem_reserved = 0.0, 0.0
+        mem_alloc = device_module.max_memory_allocated() / 1e9 if self.device.type == "cuda" else 0.0
+        mem_reserved = device_module.max_memory_reserved() / 1e9 if self.device.type == "cuda" else 0.0
 
-        return {
+        metrics = {
             "latency_ms": (total_time / num_iterations) * 1000,
             "throughput_tokens_per_sec": total_tokens / total_time,
             "memory_allocated_gb": mem_alloc,
             "memory_reserved_gb": mem_reserved,
         }
 
-    def _generate(
-        self,
-        input_ids: torch.Tensor,
-        max_new_tokens: int = 128,
-        temperature: float = 0.7,
-        top_k: int = 50,
-    ) -> torch.Tensor:
+        self.log.info(f"Latency: {metrics['latency_ms']:.2f}ms, Throughput: {metrics['throughput_tokens_per_sec']:.2f} tok/s")
+        return metrics
+
+    def _generate(self, input_ids: torch.Tensor, max_new_tokens: int = 128) -> torch.Tensor:
         """Simple greedy/sampling generation."""
-        eos_token_id = (
-            self.tokenizer.eos_token_id
-            if self.tokenizer is not None and hasattr(self.tokenizer, "eos_token_id")
-            else 2
-        )
+        # Get eos token
+        eos_token_id = 2
+        if self.tokenizer is not None:
+            if hasattr(self.tokenizer, "eos_id"):
+                eos_token_id = self.tokenizer.eos_id
+            elif hasattr(self.tokenizer, "eos_token_id"):
+                eos_token_id = self.tokenizer.eos_token_id
 
         for _ in range(max_new_tokens):
             attention_mask = self._create_attention_mask(input_ids)
             logits = self.model(input_ids, attention_masks=attention_mask)
 
-            next_token_logits = logits[:, -1, :] / temperature
-
-            if top_k > 0:
-                topk_vals = torch.topk(next_token_logits, top_k)[0][..., -1, None]
-                next_token_logits[next_token_logits < topk_vals] = float("-inf")
+            next_token_logits = logits[:, -1, :] / 0.7  # temperature
+            topk_vals = torch.topk(next_token_logits, 50)[0][..., -1, None]
+            next_token_logits[next_token_logits < topk_vals] = float("-inf")
 
             probs = F.softmax(next_token_logits, dim=-1)
             next_token = torch.multinomial(probs, num_samples=1)
@@ -858,46 +779,47 @@ class MoEEvaluator:
 
     def evaluate_computational_cost(self, seq_len: int = 512) -> dict[str, float]:
         """Evaluate computational cost (FLOPs, active parameters)."""
-        logger.info("Evaluating computational cost")
+        self.log.info("Evaluating computational cost...")
 
-        input_ids = torch.randint(
-            0, self.model_args.vocab_size, (1, seq_len), device=self.device
-        )
+        input_ids = torch.randint(0, self.model_args.vocab_size, (1, seq_len), device=self.device)
         total_params = sum(p.numel() for p in self.model.parameters())
 
         # Try theoretical FLOPs first
-        total_flops, num_flops_per_token = get_theoretical_flops(
-            self.model, self.model_args, seq_len
-        )
+        total_flops, num_flops_per_token = FlopsCalculator.from_model_args(self.model, self.model_args, seq_len)
 
         # Try measured FLOPs if theoretical not available
         if total_flops is None:
             attention_mask = self._create_attention_mask(input_ids)
-            measured = measure_flops_with_counter(self.model, input_ids, attention_mask)
+            measured = FlopsCalculator.measure_with_counter(self.model, input_ids, attention_mask)
             if measured is not None:
                 total_flops = measured
                 num_flops_per_token = measured / seq_len
 
         # Fallback to estimate
         if total_flops is None:
-            total_flops = estimate_flops_from_params(total_params, seq_len)
-
-        tflops = total_flops / 1e12
-        active_params_b = total_params / 1e9
-
-        logger.info(
-            f"Total FLOPs: {tflops:.2f} TFLOPs, "
-            f"Active params: {active_params_b:.2f}B, "
-            f"Peak GPU FLOPS: {self.gpu_peak_flops:.2e}"
-        )
+            total_flops = FlopsCalculator.estimate_from_params(total_params, seq_len)
 
         return {
             "total_flops": int(total_flops),
-            "tflops": tflops,
-            "active_params_billions": active_params_b,
+            "tflops": total_flops / 1e12,
+            "active_params_billions": total_params / 1e9,
             "num_flops_per_token": num_flops_per_token,
             "gpu_peak_flops": self.gpu_peak_flops,
         }
+
+    # -------------------------------------------------------------------------
+    # Progress Helpers
+    # -------------------------------------------------------------------------
+
+    def _progress_iterator(self, count: int, desc: str):
+        """Create a progress iterator that only shows on rank 0."""
+        from tqdm import tqdm
+        return tqdm(range(count), desc=desc, disable=self.rank != 0, unit="iter")
+
+    def _run_with_progress(self, count: int, step_fn: Callable, desc: str):
+        """Run a function multiple times with progress bar."""
+        for _ in self._progress_iterator(count, desc):
+            step_fn()
 
     # -------------------------------------------------------------------------
     # Full Evaluation Pipeline
@@ -907,48 +829,27 @@ class MoEEvaluator:
         self,
         output_dir: str,
         skip_lm_eval: bool = False,
+        lm_eval_only: bool = False,
         lm_eval_tasks: list[str] | None = None,
+        lm_eval_limit: int | None = None,
     ) -> EvalResults:
         """Run full evaluation suite."""
         eval_start_time = time.time()
-        logger.info("Starting full evaluation")
-
         results = EvalResults()
 
-        # 1. Routing efficiency
-        self._log_phase("1/4 - Evaluating routing efficiency")
-        results.routing_stats = self.evaluate_routing_efficiency(
-            num_samples=100, seq_len=512
-        )
+        phases = [
+            ("1/4", "Routing efficiency", not lm_eval_only, lambda: self._eval_routing(results)),
+            ("2/4", "Inference performance", not lm_eval_only, lambda: self._eval_performance(results)),
+            ("3/4", "Computational cost", not lm_eval_only, lambda: self._eval_cost(results)),
+            ("4/4", "lm_eval", not skip_lm_eval, lambda: self._eval_lm_eval(results, output_dir, lm_eval_tasks, lm_eval_limit)),
+        ]
 
-        # 2. Inference performance
-        self._log_phase("2/4 - Evaluating inference performance")
-        perf = self.evaluate_inference_performance(
-            max_new_tokens=128, num_warmup=3, num_iterations=10
-        )
-        results.latency_ms = perf["latency_ms"]
-        results.throughput_tokens_per_sec = perf["throughput_tokens_per_sec"]
-        results.memory_allocated_gb = perf["memory_allocated_gb"]
-        results.memory_reserved_gb = perf["memory_reserved_gb"]
-
-        # 3. Computational cost
-        self._log_phase("3/4 - Evaluating computational cost")
-        cost = self.evaluate_computational_cost(seq_len=512)
-        results.total_flops = cost["total_flops"]
-        results.tflops = cost["tflops"]
-        results.active_params_b = cost["active_params_billions"]
-        results.num_flops_per_token = cost.get("num_flops_per_token")
-        results.gpu_peak_flops = cost.get("gpu_peak_flops")
-
-        # 4. Model accuracy (lm_eval)
-        if skip_lm_eval:
-            self._log_phase("4/4 - Skipping lm_eval (--skip_lm_eval flag set)")
-        else:
-            self._log_phase("4/4 - Running lm_eval (this may take a while)")
-            if self.rank == 0:
-                results.lm_eval_results = self._run_lm_eval(
-                    output_dir=output_dir, tasks=lm_eval_tasks or ["mmlu", "hellaswag"]
-                )
+        for phase_num, phase_name, should_run, phase_fn in phases:
+            if should_run:
+                self.log.info(f"\n{'=' * 80}\n{phase_num} - Evaluating {phase_name}\n{'=' * 80}")
+                phase_fn()
+            else:
+                self.log.info(f"\n{'=' * 80}\n{phase_num} - Skipping {phase_name}\n{'=' * 80}")
 
         # Finalize results
         results.walltime_seconds = time.time() - eval_start_time
@@ -965,11 +866,30 @@ class MoEEvaluator:
 
         return results
 
-    def _log_phase(self, message: str):
-        """Log evaluation phase."""
-        logger.info("\n" + "=" * 80)
-        logger.info(message)
-        logger.info("=" * 80)
+    def _eval_routing(self, results: EvalResults):
+        results.routing_stats = self.evaluate_routing_efficiency(num_samples=100, seq_len=512)
+
+    def _eval_performance(self, results: EvalResults):
+        perf = self.evaluate_inference_performance(max_new_tokens=128, num_warmup=3, num_iterations=10)
+        results.latency_ms = perf["latency_ms"]
+        results.throughput_tokens_per_sec = perf["throughput_tokens_per_sec"]
+        results.memory_allocated_gb = perf["memory_allocated_gb"]
+        results.memory_reserved_gb = perf["memory_reserved_gb"]
+
+    def _eval_cost(self, results: EvalResults):
+        cost = self.evaluate_computational_cost(seq_len=512)
+        results.total_flops = cost["total_flops"]
+        results.tflops = cost["tflops"]
+        results.active_params_b = cost["active_params_billions"]
+        results.num_flops_per_token = cost.get("num_flops_per_token")
+        results.gpu_peak_flops = cost.get("gpu_peak_flops")
+
+    def _eval_lm_eval(self, results: EvalResults, output_dir: str, tasks: list[str] | None, limit: int | None):
+        results.lm_eval_results = self._run_lm_eval(
+            output_dir=output_dir,
+            tasks=tasks or ["mmlu", "hellaswag", "arc_easy"],
+            limit=limit,
+        )
 
     def _save_results(self, results: EvalResults, output_dir: str):
         """Save results to JSON file."""
@@ -985,99 +905,57 @@ class MoEEvaluator:
         with open(results_file, "w") as f:
             json.dump(results.to_dict(), f, indent=2)
 
-        logger.info(f"\nResults saved to {results_file.resolve()}")
-        print_full_summary(results)
+        self.log.info(f"Results saved to {results_file.resolve()}")
+        self.printer.print_full_summary(results)
 
     # -------------------------------------------------------------------------
     # lm_eval Integration
     # -------------------------------------------------------------------------
 
-    def _run_lm_eval(self, output_dir: str, tasks: list[str]) -> dict[str, Any] | None:
-        """Run lm_eval by converting checkpoint to HF format."""
-        hf_checkpoint_dir = Path(output_dir) / "hf_checkpoint"
+    def _run_lm_eval(self, output_dir: str, tasks: list[str], limit: int | None = None) -> dict[str, Any] | None:
+        """Run lm_eval directly on the torchtitan model."""
+        import sys
 
-        if not self._convert_to_hf(hf_checkpoint_dir):
-            return None
-
-        return self._run_lm_eval_command(hf_checkpoint_dir, output_dir, tasks)
-
-    def _convert_to_hf(self, hf_checkpoint_dir: Path) -> bool:
-        """Convert checkpoint to HuggingFace format."""
-        logger.info("Converting checkpoint to HuggingFace format")
-
-        cmd = [
-            "python",
-            "./scripts/checkpoint_conversion/convert_to_hf.py",
-            str(self.checkpoint_dir),
-            str(hf_checkpoint_dir),
-            "--model_name",
-            self.job_config.model.name,
-            "--model_flavor",
-            self.job_config.model.flavor,
-            "--export_dtype",
-            "bfloat16",
-        ]
-
-        if self.job_config.model.hf_assets_path:
-            cmd.extend(["--hf_assets_path", self.job_config.model.hf_assets_path])
+        script_dir = Path(__file__).parent
+        if str(script_dir) not in sys.path:
+            sys.path.insert(0, str(script_dir))
 
         try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
-            logger.info(f"HF checkpoint saved to {hf_checkpoint_dir}")
-            return True
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to convert checkpoint: {e.stderr}")
-            return False
-
-    def _run_lm_eval_command(
-        self, hf_checkpoint_dir: Path, output_dir: str, tasks: list[str]
-    ) -> dict[str, Any] | None:
-        """Run lm_eval command on converted checkpoint."""
-        logger.info(f"Running lm_eval on tasks: {tasks}")
-
-        if shutil.which("lm_eval") is None:
-            logger.warning(
-                "lm_eval not found. Please install it:\n"
-                "  pip install lm-eval\n"
-                f"Then run manually:\n"
-                f"  lm_eval --model hf --model_args pretrained={hf_checkpoint_dir},dtype=auto "
-                f"--tasks {','.join(tasks)} --batch_size auto"
-            )
+            from torchtitan_lm_eval import run_evaluation
+        except ImportError as e:
+            self.log.warning(f"lm_eval not available: {e}. Install with: pip install lm-eval")
             return None
 
+        self.log.info(f"Running lm_eval on tasks: {tasks}")
+        output_path = Path(output_dir) / "lm_eval_results.json"
+
         try:
-            result = subprocess.run(
-                [
-                    "lm_eval",
-                    "--model",
-                    "hf",
-                    "--model_args",
-                    f"pretrained={hf_checkpoint_dir},dtype=auto",
-                    "--tasks",
-                    ",".join(tasks),
-                    "--batch_size",
-                    "auto",
-                    "--output_path",
-                    str(Path(output_dir) / "lm_eval_output"),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
+            results = run_evaluation(
+                tasks=tasks,
+                batch_size=1,
+                limit=limit,
+                output_path=str(output_path) if self.rank == 0 else None,
+                model=self.model,
+                tokenizer=self.tokenizer,
+                model_args=self.model_args,
             )
-            logger.info("lm_eval completed successfully")
-            logger.info(result.stdout)
 
-            output_file = Path(output_dir) / "lm_eval_output" / "results.json"
-            if output_file.exists():
-                with open(output_file) as f:
-                    return json.load(f)
+            if self.rank == 0:
+                self.log.info("lm_eval completed successfully")
+                for task_name, task_results in results.get("results", {}).items():
+                    self.log.info(f"\n{task_name}:")
+                    for metric, value in task_results.items():
+                        if isinstance(value, float):
+                            self.log.info(f"  {metric}: {value:.4f}")
 
-        except subprocess.CalledProcessError as e:
-            logger.error(f"lm_eval failed: {e.stderr}")
-        except FileNotFoundError:
-            logger.warning("lm_eval command not found. Skipping.")
+                return results.get("results", {})
+            return None
 
-        return None
+        except Exception as e:
+            self.log.error(f"lm_eval failed: {e}")
+            import traceback
+            self.log.error(traceback.format_exc())
+            return None
 
     # -------------------------------------------------------------------------
     # Cleanup
@@ -1097,42 +975,14 @@ class MoEEvaluator:
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Distributed MoE Model Evaluation")
-    parser.add_argument(
-        "--checkpoint_dir",
-        type=str,
-        required=True,
-        help="Path to checkpoint directory (DCP format)",
-    )
-    parser.add_argument(
-        "--config_file",
-        type=str,
-        required=True,
-        help="Path to training config TOML file",
-    )
-    parser.add_argument(
-        "--output_dir",
-        type=str,
-        default=None,
-        help="Directory to save evaluation results (default: {dump_folder}/eval)",
-    )
-    parser.add_argument(
-        "--skip_lm_eval",
-        action="store_true",
-        help="Skip lm_eval (requires separate installation)",
-    )
-    parser.add_argument(
-        "--lm_eval_tasks",
-        type=str,
-        nargs="+",
-        default=["mmlu", "hellaswag", "arc_easy"],
-        help="Tasks to run for lm_eval",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=1337,
-        help="Random seed for reproducibility (default: 1337)",
-    )
+    parser.add_argument("--checkpoint_dir", type=str, required=True, help="Path to checkpoint directory")
+    parser.add_argument("--config_file", type=str, required=True, help="Path to training config TOML file")
+    parser.add_argument("--output_dir", type=str, default=None, help="Directory to save results")
+    parser.add_argument("--skip_lm_eval", action="store_true", help="Skip lm_eval benchmark")
+    parser.add_argument("--lm_eval_only", action="store_true", help="Only run lm_eval")
+    parser.add_argument("--lm_eval_tasks", type=str, nargs="+", default=["mmlu", "hellaswag", "arc_easy"])
+    parser.add_argument("--lm_eval_limit", type=int, default=None, help="Limit examples per task")
+    parser.add_argument("--seed", type=int, default=1337, help="Random seed")
     return parser.parse_args()
 
 
@@ -1140,9 +990,7 @@ def get_output_dir(evaluator: MoEEvaluator, output_dir: str | None) -> str:
     """Determine output directory from args or config."""
     if output_dir is not None:
         return output_dir
-    default_dir = str(Path(evaluator.job_config.job.dump_folder) / "eval")
-    logger.info(f"Using default output directory: {default_dir}")
-    return default_dir
+    return str(Path(evaluator.job_config.job.dump_folder) / "eval")
 
 
 # =============================================================================
@@ -1163,24 +1011,24 @@ def main():
             seed=args.seed,
         )
         output_dir = get_output_dir(evaluator, args.output_dir)
+
         if evaluator.rank == 0:
             Path(output_dir).mkdir(parents=True, exist_ok=True)
+
         results = evaluator.run_full_evaluation(
             output_dir=output_dir,
             skip_lm_eval=args.skip_lm_eval,
+            lm_eval_only=args.lm_eval_only,
             lm_eval_tasks=args.lm_eval_tasks,
+            lm_eval_limit=args.lm_eval_limit,
         )
-        if results.walltime_seconds is not None:
-            logger.info(f"\nEvaluation complete!")
-            logger.info(
-                f"Total walltime: {format_walltime(results.walltime_seconds)} "
-                f"({results.walltime_seconds:.2f} seconds)"
-            )
-        else:
-            logger.info("\nEvaluation complete!")
+
+        if evaluator.rank == 0 and results.walltime_seconds:
+            formatted = ResultsPrinter.format_walltime(results.walltime_seconds)
+            evaluator.log.info(f"\nEvaluation complete! Walltime: {results.walltime_seconds:.2f}s ({formatted})")
 
     except Exception as e:
-        logger.error(f"Evaluation failed with error: {e}")
+        logger.error(f"Evaluation failed: {e}")
         raise
     finally:
         if evaluator is not None:

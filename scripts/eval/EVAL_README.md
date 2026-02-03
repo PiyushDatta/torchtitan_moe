@@ -9,6 +9,8 @@ These scripts provide comprehensive evaluation of MoE (Mixture of Experts) model
 - `scripts/eval/eval_moe_model.py` - Main evaluation script (distributed)
 - `scripts/eval/run_eval_moe.sh` - Convenient bash wrapper with torchrun
 - `scripts/eval/compare_eval_results.py` - Compare two eval result files
+- `scripts/eval/torchtitan_lm_eval.py` - Custom lm_eval wrapper for torchtitan models
+- `scripts/eval/eval_convert_to_hf.py` - Standalone script to convert checkpoints to HuggingFace format
 
 ## Evaluation Metrics
 
@@ -29,9 +31,9 @@ These scripts provide comprehensive evaluation of MoE (Mixture of Experts) model
 - Active parameters (billions)
 
 ### 4. Model Accuracy (Optional)
-- Automatic HuggingFace checkpoint conversion
-- lm_eval integration (requires separate installation)
+- Direct lm_eval integration (no HuggingFace conversion needed)
 - Supports MMLU, HellaSwag, ARC-easy, and other benchmarks
+- Requires separate lm-eval installation
 
 ## Usage
 
@@ -85,7 +87,7 @@ Install lm-eval:
 pip install lm-eval
 ```
 
-Note: The script uses the HuggingFace backend which is compatible with all Python versions. For faster inference with vllm backend, use Python 3.10/3.11 and install `pip install "lm-eval[vllm]"`.
+Note: The script runs lm_eval directly on the torchtitan model without HuggingFace conversion. For faster inference with vllm backend, use Python 3.10/3.11 and install `pip install "lm-eval[vllm]"`.
 
 ## Outputs
 
@@ -104,20 +106,31 @@ Example filename: `eval_results_20260129_212638.json`
     },
     "aggregate": {
       "avg_gini_coefficient": 0.11,
-      "avg_coefficient_of_variation": 0.14
+      "avg_coefficient_of_variation": 0.14,
+      "avg_expert_utilization_rate": 0.96,
+      "num_moe_layers": 26
     }
   },
   "inference_performance": {
-    "latency_ms": 150.5,
-    "throughput_tokens_per_sec": 845.2,
-    "memory_allocated_gb": 38.2,
-    "memory_reserved_gb": 39.1
+    "latency_ms": 65067.35,
+    "throughput_tokens_per_sec": 1.97,
+    "memory_allocated_gb": 17.29,
+    "memory_reserved_gb": 18.34
   },
   "computational_cost": {
-    "tflops": 6.89,
-    "active_params_billions": 9.7
+    "total_flops": 7750000000000,
+    "tflops": 7.75,
+    "active_params_billions": 15.71,
+    "num_flops_per_token": 1.51e+10,
+    "gpu_peak_flops": null
   },
-  "walltime_seconds": 532.45,
+  "lm_eval_results": {
+    "hellaswag": {
+      "acc,none": 0.34,
+      "acc_norm,none": 0.37
+    }
+  },
+  "walltime_seconds": 826.61,
   "checkpoint_dir": "./outputs/checkpoint/step-1000",
   "config": {
     "job": {"description": "DeepSeek-V3 MoE ~10B training"},
@@ -131,8 +144,8 @@ Example filename: `eval_results_20260129_212638.json`
     "n_heads": 16,
     "moe_args": {"num_experts": 64, "top_k": 6}
   },
-  "eval_timestamp": "20260129_212638",
-  "output_file": "./torchtitan_moe/outputs/eval/eval_results_20260129_212638.json"
+  "eval_timestamp": "20260203_004013",
+  "output_file": "/data/repos/torchtitan_moe/outputs/eval/eval_results_20260203_004013.json"
 }
 ```
 
@@ -269,5 +282,51 @@ torchrun --nproc_per_node=4 scripts/eval/eval_moe_model.py \
 | CONFIG_FILE | (required) | Path to training config TOML |
 | OUTPUT_DIR | {dump_folder}/eval | Where to save results (uses dump_folder from config if not set) |
 | SKIP_LM_EVAL | 0 | Set to 1 to skip lm_eval |
+| LM_EVAL_ONLY | 0 | Set to 1 to only run lm_eval (skip routing/inference analysis) |
+| LM_EVAL_TASKS | "mmlu hellaswag arc_easy" | Space-separated list of tasks (use quotes!) |
+| LM_EVAL_LIMIT | all | Limit examples per task (e.g., 100 for quick testing) |
 | SEED | 1337 | Random seed for reproducibility |
 | NGPU | auto-detect | Number of GPUs to use (auto-detects from config parallelism, set to 0 for CPU) |
+
+### Running lm_eval with Specific Tasks
+
+**Important**: Use quotes around the task list when specifying multiple tasks:
+
+```bash
+CHECKPOINT_DIR=./outputs/checkpoint/step-1000 \
+CONFIG_FILE=./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_16b_nvidia_4x_a100_80GBmem.toml \
+LM_EVAL_ONLY=1 \
+LM_EVAL_TASKS="mmlu hellaswag winogrande arc_challenge" \
+./scripts/eval/run_eval_moe.sh
+```
+
+### Quick Testing with Limited Samples
+
+For fast iteration, limit the number of examples per task:
+
+```bash
+# Run hellaswag with only 100 samples (~5 min instead of ~1 hour)
+CHECKPOINT_DIR=./outputs/checkpoint/step-1000 \
+CONFIG_FILE=./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_16b_nvidia_4x_a100_80GBmem.toml \
+LM_EVAL_ONLY=1 \
+LM_EVAL_TASKS="hellaswag" \
+LM_EVAL_LIMIT=100 \
+./scripts/eval/run_eval_moe.sh
+```
+
+### Understanding lm_eval Results
+
+The key metric for most benchmarks is `acc_norm` (length-normalized accuracy):
+
+```
+hellaswag:
+    acc,none: 0.34           # Raw accuracy
+    acc_stderr,none: 0.048   # Standard error
+    acc_norm,none: 0.37      # Normalized accuracy (this is the reported metric)
+    acc_norm_stderr,none: 0.049
+```
+
+Reference scores for HellaSwag (acc_norm):
+- LLaMA-7B: ~78%
+- DeepSeekMoE 16B (10 shot): ~80%
+- LLaMA-65B: ~86%

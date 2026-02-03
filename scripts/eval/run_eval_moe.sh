@@ -10,6 +10,9 @@
 #   CONFIG_FILE    - Path to training config TOML file (required)
 #   OUTPUT_DIR     - Directory to save results (default: {dump_folder}/eval from config)
 #   SKIP_LM_EVAL   - Set to 1 to skip lm_eval benchmark (default: 0)
+#   LM_EVAL_ONLY   - Set to 1 to only run lm_eval, skip other evaluations (default: 0)
+#   LM_EVAL_TASKS  - Space-separated list of lm_eval tasks (default: "mmlu hellaswag arc_easy")
+#   LM_EVAL_LIMIT  - Limit number of examples per task (default: all). E.g., 100 for quick testing
 #   SEED           - Random seed for reproducibility (default: 1337)
 #   NGPU           - Number of GPUs to use (default: auto-detect from config)
 #
@@ -34,6 +37,25 @@
 #   NGPU=4 \
 #   CHECKPOINT_DIR=./outputs/checkpoint/step-1000 \
 #   CONFIG_FILE=./config.toml \
+#   ./scripts/eval/run_eval_moe.sh
+#
+#   # Run specific lm_eval tasks:
+#   CHECKPOINT_DIR=./outputs/checkpoint/step-1000 \
+#   CONFIG_FILE=./config.toml \
+#   LM_EVAL_TASKS="hellaswag arc_easy" \
+#   ./scripts/eval/run_eval_moe.sh
+#
+#   # Run only lm_eval (skip routing/inference/flops analysis):
+#   CHECKPOINT_DIR=./outputs/checkpoint/step-1000 \
+#   CONFIG_FILE=./config.toml \
+#   LM_EVAL_ONLY=1 \
+#   ./scripts/eval/run_eval_moe.sh
+#
+#   # Quick test with limited samples (100 examples per task):
+#   CHECKPOINT_DIR=./outputs/checkpoint/step-1000 \
+#   CONFIG_FILE=./config.toml \
+#   LM_EVAL_ONLY=1 \
+#   LM_EVAL_LIMIT=100 \
 #   ./scripts/eval/run_eval_moe.sh
 
 set -e
@@ -124,9 +146,24 @@ if [ "${SKIP_LM_EVAL}" = "1" ]; then
     ARGS="${ARGS} --skip_lm_eval"
 fi
 
+# Add lm_eval_only flag if set
+if [ "${LM_EVAL_ONLY}" = "1" ]; then
+    ARGS="${ARGS} --lm_eval_only"
+fi
+
 # Add seed if set
 if [ -n "${SEED}" ]; then
     ARGS="${ARGS} --seed ${SEED}"
+fi
+
+# Add lm_eval tasks if set
+if [ -n "${LM_EVAL_TASKS}" ]; then
+    ARGS="${ARGS} --lm_eval_tasks ${LM_EVAL_TASKS}"
+fi
+
+# Add lm_eval limit if set
+if [ -n "${LM_EVAL_LIMIT}" ]; then
+    ARGS="${ARGS} --lm_eval_limit ${LM_EVAL_LIMIT}"
 fi
 
 # Append any additional arguments
@@ -139,6 +176,9 @@ echo "Checkpoint: ${CHECKPOINT_DIR}"
 echo "Config:     ${CONFIG_FILE}"
 echo "Output:     ${OUTPUT_DIR:-(auto: {dump_folder}/eval)}"
 echo "Skip lm_eval: ${SKIP_LM_EVAL:-0}"
+echo "lm_eval only: ${LM_EVAL_ONLY:-0}"
+echo "lm_eval tasks: ${LM_EVAL_TASKS:-mmlu hellaswag arc_easy (default)}"
+echo "lm_eval limit: ${LM_EVAL_LIMIT:-all (full dataset)}"
 echo "Seed:       ${SEED:-1337 (default)}"
 echo "GPUs:       ${NGPU} (required: ${MIN_GPUS}, available: ${AVAILABLE_GPUS})"
 echo "Parallelism: EP=${EP_DEGREE}, TP=${TP_DEGREE}, PP=${PP_DEGREE}"
