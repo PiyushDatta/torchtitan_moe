@@ -34,7 +34,7 @@
       - Windows powershell: `.venv\Scripts\Activate.ps1`
       - Linux/Mac/Other: `source .venv/bin/activate`
    4. Pip install all dependencies
-      - `uv sync && uv pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu126 --force-reinstall`
+      - `uv sync && uv pip install --pre "torch==2.11.0.dev20260129+cu126" --index-url https://download.pytorch.org/whl/nightly/cu126 --force-reinstall`
 
 ## Command to run training script (single node - up to 8 GPUs)
    1. [Downloading a tokenizer](#downloading-a-tokenizer)
