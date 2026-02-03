@@ -51,6 +51,7 @@ pipeline_parallel_degree = 1
 pipeline_parallel_schedule = "Interleaved1F1B"
 expert_parallel_degree = 4
 expert_tensor_parallel_degree = 1
+expert_parallel_comm_backend = "standard" # ["standard", "deepep"]
 
 [checkpoint]
 enable = true

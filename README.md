@@ -38,9 +38,9 @@
 
 ## Command to run training script (single node - up to 8 GPUs)
    1. [Downloading a tokenizer](#downloading-a-tokenizer)
-      - `python scripts/download_hf_assets.py --repo_id meta-llama/Llama-3.1-8B --assets tokenizer --hf_token=$YOUR_HF_TOKEN`
+      - `python scripts/download_hf_assets.py --repo_id deepseek-ai/deepseek-moe-16b-base --assets tokenizer --hf_token=$YOUR_HF_TOKEN`
    2. [Start a training run](#start-a-training-run)
-      - `LOG_RANK=0 NGPU=8 CONFIG_FILE="./torchtitan/models/llama3/train_configs/llama3_8b.toml" ./run_train.sh`
+      - `LOG_RANK=0 NGPU=4 CONFIG_FILE="./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_16b_nvidia_4x_a100_80GBmem.toml" ./run_train.sh`
 
 
 
