@@ -38,6 +38,9 @@ class MoEArgs:
     _debug_force_load_balance: bool = False
     # if True, we force each experts get same amount of token via round-robin
 
+    # Mixture of Depths
+    mod_capacity_ratio: float = 0.0  # set from Parallelism config; 0.0 = disabled
+
 
 # can be used as dense FFN layer or shared experts in MoE layers
 class FeedForward(nn.Module):
@@ -583,6 +586,20 @@ def build_moe(
             f"DeepEP MoE: num_experts={args.num_experts}, top_k={args.top_k}, dim={dim}, hidden_dim={hidden_dim}"
         )
         return DeepEPMoE(moe_args=args, dim=dim, hidden_dim=hidden_dim)
+    elif args.mod_capacity_ratio > 0:
+        # Mixture of Depths
+        # abs: https://arxiv.org/abs/2404.02258
+        # pdf: https://arxiv.org/pdf/2404.02258
+        from .mod import MixtureOfDepths
+
+        logger.info(
+            f"Mixture of Depths enabled: capacity_ratio={args.mod_capacity_ratio}, num_experts={args.num_experts}, top_k={args.top_k}, dim={dim}, hidden_dim={hidden_dim}"
+        )
+        return MixtureOfDepths(
+            MoE(args, dim=dim, hidden_dim=hidden_dim),
+            dim=dim,
+            capacity_ratio=args.mod_capacity_ratio,
+        )
 
     logger.info(
         f"Standard MoE: num_experts={args.num_experts}, top_k={args.top_k}, dim={dim}, hidden_dim={hidden_dim}"
