@@ -52,20 +52,20 @@ Use presets to quickly compare models with different time budgets:
 ```bash
 # Ultra-quick 30-second routing check
 CHECKPOINT_DIR=./outputs/checkpoint/step-1000 \
-CONFIG_FILE=./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_10b_nvidia_4x_a100_40GBmem.toml \
+CONFIG_FILE=./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_16b_nvidia_4x_a100_80GBmem.toml \
 PRESET=30s \
 ./scripts/eval/run_eval_moe.sh
 
 # 5-minute evaluation for ablation studies
 PRESET=5min \
 CHECKPOINT_DIR=./outputs/checkpoint/step-1000 \
-CONFIG_FILE=./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_10b_nvidia_4x_a100_40GBmem.toml \
+CONFIG_FILE=./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_16b_nvidia_4x_a100_80GBmem.toml \
 ./scripts/eval/run_eval_moe.sh
 
 # 15-minute moderate evaluation with basic lm_eval
 PRESET=15min \
 CHECKPOINT_DIR=./outputs/checkpoint/step-1000 \
-CONFIG_FILE=./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_10b_nvidia_4x_a100_40GBmem.toml \
+CONFIG_FILE=./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_16b_nvidia_4x_a100_80GBmem.toml \
 ./scripts/eval/run_eval_moe.sh
 ```
 
@@ -73,7 +73,7 @@ CONFIG_FILE=./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_10b_nvidia
 
 ```bash
 CHECKPOINT_DIR=./outputs/checkpoint/step-1000 \
-CONFIG_FILE=./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_10b_nvidia_4x_a100_40GBmem.toml \
+CONFIG_FILE=./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_16b_nvidia_4x_a100_80GBmem.toml \
 ./scripts/eval/run_eval_moe.sh
 ```
 
@@ -82,7 +82,7 @@ CONFIG_FILE=./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_10b_nvidia
 ```bash
 torchrun --nproc_per_node=4 scripts/eval/eval_moe_model.py \
     --checkpoint_dir ./outputs/checkpoint/step-1000 \
-    --config_file ./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_10b_nvidia_4x_a100_40GBmem.toml \
+    --config_file ./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_16b_nvidia_4x_a100_80GBmem.toml \
     --preset 5min \
     --output_dir ./eval_results
 ```
@@ -233,7 +233,7 @@ Run eval on each checkpoint:
 ```bash
 for step in 500 1000 1500 2000; do
     CHECKPOINT_DIR=./outputs/checkpoint/step-${step} \
-    CONFIG_FILE=./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_10b_nvidia_4x_a100_40GBmem.toml \
+    CONFIG_FILE=./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_16b_nvidia_4x_a100_80GBmem.toml \
     OUTPUT_DIR=./outputs/eval/step-${step} \
     SKIP_LM_EVAL=1 \
     ./scripts/eval/run_eval_moe.sh
