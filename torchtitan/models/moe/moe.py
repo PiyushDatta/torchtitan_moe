@@ -596,8 +596,7 @@ def build_moe(
             f"Mixture of Depths enabled: capacity_ratio={args.mod_capacity_ratio}, num_experts={args.num_experts}, top_k={args.top_k}, dim={dim}, hidden_dim={hidden_dim}"
         )
         return MixtureOfDepths(
-            MoE(args, dim=dim, hidden_dim=hidden_dim),
-            dim=dim,
+            args, dim=dim, hidden_dim=hidden_dim,
             capacity_ratio=args.mod_capacity_ratio,
         )
 

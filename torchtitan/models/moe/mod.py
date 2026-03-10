@@ -4,23 +4,24 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Mixture of Depths (MoD) wrapper for MoE layers.
+"""Mixture of Depths (MoD) as an MoE subclass.
 
 MoD selects a subset of tokens via a lightweight router and only processes
-those through the MoE layer.  Unselected tokens produce zero output; the
+those through the MoE layer. Unselected tokens produce zero output; the
 residual connection in the TransformerBlock handles the pass-through.
+
+By subclassing MoE, all existing parallelization plans, isinstance checks,
+attribute access patterns, and checkpoint FQN paths work unchanged.
 """
 
 import torch
 from torch import nn
 
+from .moe import MoE, MoEArgs
+
 
 class MoDRouter(nn.Module):
-    """Mixture of Depths router that selects which tokens to process.
-
-    Produces a scalar score per token via a linear gate + sigmoid.
-    Selects the top-C tokens (by score) for full MoE processing;
-    unselected tokens skip via residual connection.
+    """Lightweight router that selects which tokens to process.
 
     Args:
         dim (int): Input token dimension.
@@ -35,13 +36,12 @@ class MoDRouter(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
-            x (torch.Tensor): Flattened input tokens, shape ``(num_tokens, dim)``.
-            capacity (int): Number of tokens to select.
+            x: Flattened input tokens, shape ``(num_tokens, dim)``.
+            capacity: Number of tokens to select.
 
         Returns:
-            tuple[torch.Tensor, torch.Tensor]:
-                - scores: Sigmoid scores for all tokens, shape ``(num_tokens,)``.
-                - top_indices: Indices of selected tokens, shape ``(capacity,)``.
+            scores: Sigmoid scores for all tokens, shape ``(num_tokens,)``.
+            top_indices: Indices of selected tokens, shape ``(capacity,)``.
         """
         scores = torch.sigmoid(self.gate(x).squeeze(-1).float())
         _, top_indices = torch.topk(scores, k=capacity, sorted=False)
@@ -51,23 +51,33 @@ class MoDRouter(nn.Module):
         nn.init.trunc_normal_(self.gate.weight, mean=0.0, std=init_std)
 
 
-class MixtureOfDepths(nn.Module):
-    """Wraps an MoE module with Mixture of Depths token selection.
+class MixtureOfDepths(MoE):
+    """MoE with Mixture of Depths token selection.
 
     Only the top-C tokens (C = capacity_ratio * num_tokens) are processed
-    through the inner MoE.  Their outputs are weighted by the MoD router
-    scores and scattered back to the full sequence.  Unselected positions
-    are zero, so the residual add in TransformerBlock acts as a skip.
+    through the MoE. Their outputs are weighted by the MoD router scores
+    and scattered back to the full sequence. Unselected positions are zero,
+    so the residual add in TransformerBlock acts as a skip.
+
+    Since this subclasses MoE, all attributes (router, experts, shared_experts,
+    reorderer, etc.) live directly on this module, keeping FQN paths, parallelize
+    plans, and isinstance checks identical to standard MoE.
 
     Args:
-        moe (nn.Module): The inner MoE module (MoE, DeepEPMoE, GptOssMoE, etc.).
-        dim (int): Token dimension.
-        capacity_ratio (float): Fraction of tokens to process (0, 1].
+        moe_args: MoE configuration.
+        dim: Model dimension.
+        hidden_dim: Expert hidden dimension.
+        capacity_ratio: Fraction of tokens to process (0, 1].
     """
 
-    def __init__(self, moe: nn.Module, dim: int, capacity_ratio: float):
-        super().__init__()
-        self.moe = moe
+    def __init__(
+        self,
+        moe_args: MoEArgs,
+        dim: int,
+        hidden_dim: int,
+        capacity_ratio: float,
+    ):
+        super().__init__(moe_args, dim=dim, hidden_dim=hidden_dim)
         self.mod_router = MoDRouter(dim)
         self.capacity_ratio = capacity_ratio
 
@@ -80,9 +90,9 @@ class MixtureOfDepths(nn.Module):
         mod_scores, mod_indices = self.mod_router(x_flat, capacity)
         mod_weights = mod_scores[mod_indices]  # (capacity,)
 
-        # Process selected tokens through the inner MoE
+        # Process selected tokens through the MoE
         selected = x_flat[mod_indices].unsqueeze(0)  # (1, capacity, dim)
-        moe_out = self.moe(selected).squeeze(0)  # (capacity, dim)
+        moe_out = super().forward(selected).squeeze(0)  # (capacity, dim)
 
         # Weight by MoD router scores and scatter back
         weighted = (moe_out.float() * mod_weights.unsqueeze(-1)).to(x.dtype)
@@ -90,7 +100,6 @@ class MixtureOfDepths(nn.Module):
         result[mod_indices] = weighted
         return result.view(bs, slen, dim)
 
-    # Delegate init_weights so TransformerBlock.init_weights works transparently
     def init_weights(self, init_std: float, buffer_device: torch.device):
-        self.moe.init_weights(init_std, buffer_device)
+        super().init_weights(init_std, buffer_device)
         self.mod_router.init_weights(init_std)
