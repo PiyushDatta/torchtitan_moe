@@ -229,14 +229,14 @@ EVAL_PRESETS: dict[str, EvalPreset] = {
     ),
     "full": EvalPreset(
         name="full",
-        description="Full evaluation (default, may take 30+ minutes)",
+        description="Full evaluation (~10-15 minutes)",
         routing_samples=100,
         routing_seq_len=512,
         perf_warmup=3,
         perf_iterations=10,
         perf_max_tokens=128,
-        lm_eval_tasks=["mmlu", "hellaswag", "arc_easy"],
-        lm_eval_limit=None,  # No limit
+        lm_eval_tasks=["hellaswag", "arc_easy", "mmlu_stem"],
+        lm_eval_limit=500,
     ),
 }
 
@@ -1006,7 +1006,7 @@ class MoEEvaluator:
     def _eval_lm_eval(self, results: EvalResults, output_dir: str, tasks: list[str] | None, limit: int | None):
         results.lm_eval_results = self._run_lm_eval(
             output_dir=output_dir,
-            tasks=tasks or ["mmlu", "hellaswag", "arc_easy"],
+            tasks=tasks or ["hellaswag", "arc_easy", "mmlu_stem"],
             limit=limit,
         )
 

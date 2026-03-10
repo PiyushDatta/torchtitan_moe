@@ -47,8 +47,15 @@
 ## Command to run training script (multi-node)
 1. [Multi-Node Training](#multi-node-training)
 
-## Evaluation system
-1. Read `torchtitan_moe/scripts/eval/EVAL_README.md`
+## Evaluation
+- See [`scripts/eval/EVAL_README.md`](scripts/eval/EVAL_README.md) for full documentation
+
+## Mixture of Depths (MoD)
+MoD ([arxiv.org/abs/2404.02258](https://arxiv.org/abs/2404.02258)) reduces FLOPs by only processing a fraction of tokens through MoE layers. To enable, add to your TOML config:
+```toml
+[parallelism]
+mod_capacity_ratio = 0.125  # process 12.5% of tokens; 0.0 = disabled (default)
+```
 
 ~~~~~~~~~~~~
 ## torchtitan_moe fork change 1 end

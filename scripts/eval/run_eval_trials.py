@@ -56,6 +56,8 @@ def run_single_trial(
     output_path: Path,
     script_dir: Path,
     repo_root: Path,
+    lm_eval_tasks: list[str] | None = None,
+    lm_eval_limit: int | None = None,
 ) -> bool:
     """Run a single eval trial. Returns True on success."""
     print(f"[Trial {trial_num}/{total}] ...")
@@ -71,6 +73,10 @@ def run_single_trial(
         ]
         if skip_lm_eval:
             cmd.append("--skip_lm_eval")
+        if lm_eval_tasks:
+            cmd += ["--lm_eval_tasks"] + lm_eval_tasks
+        if lm_eval_limit is not None:
+            cmd += ["--lm_eval_limit", str(lm_eval_limit)]
 
         result = subprocess.run(cmd, cwd=str(repo_root))
 
@@ -97,6 +103,8 @@ def main():
     parser.add_argument("--results_dir", default=None, help="Directory to save results (default: ./results)")
     parser.add_argument("--preset", default="5min", help="Evaluation preset per trial (default: 5min)")
     parser.add_argument("--skip_lm_eval", action="store_true", help="Skip lm_eval")
+    parser.add_argument("--lm_eval_tasks", nargs="*", default=None, help="Override lm_eval tasks (e.g. hellaswag arc_easy mmlu)")
+    parser.add_argument("--lm_eval_limit", type=int, default=None, help="Limit examples per lm_eval task")
     args = parser.parse_args()
 
     skip_lm_eval = args.skip_lm_eval
@@ -139,6 +147,8 @@ def main():
             output_path=trial_output,
             script_dir=script_dir,
             repo_root=repo_root,
+            lm_eval_tasks=args.lm_eval_tasks,
+            lm_eval_limit=args.lm_eval_limit,
         )
         if ok:
             succeeded += 1

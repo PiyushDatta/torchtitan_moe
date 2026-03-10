@@ -33,7 +33,7 @@ python scripts/eval/run_eval_moe.py \
 | `1min` | ~1 minute | Routing (10) + inference (1 iter) + lm_eval (5 samples) |
 | `5min` | ~5 minutes | Routing (30) + inference (3 iters) + lm_eval (20 samples) |
 | `15min` | ~15 minutes | Routing (50) + inference (5 iters) + lm_eval (100 samples) |
-| `full` | 30+ minutes | Complete evaluation with full lm_eval |
+| `full` | ~10-15 minutes | Routing (100) + inference (10 iters) + lm_eval (hellaswag, arc_easy, mmlu_stem, limit=500) |
 
 ## Multi-Trial Evaluation
 
@@ -58,6 +58,15 @@ python scripts/eval/run_eval_trials.py \
     --checkpoint_dir ./outputs/checkpoint/step-1000 \
     --config_file ./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_16b_nvidia_4x_a100_80GBmem.toml \
     --num_trials 50 --preset full \
+    --experiment_name baseline
+
+# Override lm_eval tasks and limit
+python scripts/eval/run_eval_trials.py \
+    --checkpoint_dir ./outputs/checkpoint/step-1000 \
+    --config_file ./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_16b_nvidia_4x_a100_80GBmem.toml \
+    --num_trials 50 --preset full \
+    --lm_eval_tasks mmlu hellaswag arc_easy \
+    --lm_eval_limit 200 \
     --experiment_name baseline
 ```
 
@@ -117,7 +126,8 @@ AGGREGATED RESULTS: baseline (50 trials)
 
 ### 4. Model Accuracy (Optional)
 - Direct lm_eval integration (no HuggingFace conversion needed)
-- Supports MMLU, HellaSwag, ARC-easy, and other benchmarks
+- Default tasks: HellaSwag, ARC-easy, MMLU-STEM (limit=500 per task)
+- Override with `--lm_eval_tasks` and `--lm_eval_limit` for full MMLU or other benchmarks
 - Requires separate lm-eval installation
 
 ## Direct torchrun Usage
@@ -156,8 +166,9 @@ torchrun --nproc_per_node=4 scripts/eval/eval_moe_model.py \
 | `--experiment_name` | `baseline` | Name for this experiment |
 | `--results_dir` | `./results` | Directory to save results |
 | `--preset` | `5min` | Evaluation preset per trial |
-| `--skip_lm_eval` | on | Skip lm_eval (default for trials) |
-| `--include_lm_eval` | off | Include lm_eval (overrides skip) |
+| `--skip_lm_eval` | off | Skip lm_eval |
+| `--lm_eval_tasks` | from preset | Override lm_eval tasks (e.g. hellaswag arc_easy mmlu) |
+| `--lm_eval_limit` | from preset | Limit examples per lm_eval task |
 
 ## Requirements
 
