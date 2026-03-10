@@ -482,7 +482,7 @@ class Parallelism:
     https://github.com/deepseek-ai/DeepEP.
     """
 
-    mod_capacity_ratio: float = 0.125
+    mod_capacity_ratio: float = 0.0
     """
     Mixture of Depths capacity ratio for MoE layers. 0.0 means disabled.
     When > 0, only this fraction of tokens are processed through MoE layers;
