@@ -96,11 +96,10 @@ def main():
     parser.add_argument("--experiment_name", default="baseline", help="Name for this experiment (default: baseline)")
     parser.add_argument("--results_dir", default=None, help="Directory to save results (default: ./results)")
     parser.add_argument("--preset", default="5min", help="Evaluation preset per trial (default: 5min)")
-    parser.add_argument("--skip_lm_eval", action="store_true", default=True, help="Skip lm_eval (default: True)")
-    parser.add_argument("--include_lm_eval", action="store_true", help="Include lm_eval (overrides --skip_lm_eval)")
+    parser.add_argument("--skip_lm_eval", action="store_true", help="Skip lm_eval")
     args = parser.parse_args()
 
-    skip_lm_eval = args.skip_lm_eval and not args.include_lm_eval
+    skip_lm_eval = args.skip_lm_eval
 
     script_dir = Path(__file__).resolve().parent
     repo_root = script_dir.parent.parent
