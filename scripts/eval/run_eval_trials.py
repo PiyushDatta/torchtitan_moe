@@ -25,8 +25,11 @@ Usage:
 """
 
 import argparse
+import atexit
 import json
+import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -38,6 +41,165 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from aggregate_trials import build_summary, load_trials, print_summary
+
+# ---------------------------------------------------------------------------
+# Process cleanup infrastructure
+# ---------------------------------------------------------------------------
+_child_procs: list[subprocess.Popen] = []
+_current_proc: subprocess.Popen | None = None  # catch race with _register
+_shutting_down = False
+_TORCHRUN_DEFAULT_PORT = 29500
+
+
+def _register_child(proc: subprocess.Popen) -> None:
+    _child_procs.append(proc)
+
+
+def _unregister_child(proc: subprocess.Popen) -> None:
+    try:
+        _child_procs.remove(proc)
+    except ValueError:
+        pass
+
+
+def _send_sig_to_proc_group(proc: subprocess.Popen, sig: int) -> None:
+    """Send a signal to a process's entire process group. Never waits."""
+    if proc.poll() is not None:
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, OSError):
+        return
+    try:
+        os.killpg(pgid, sig)
+    except (ProcessLookupError, OSError):
+        pass
+
+
+def _kill_proc_group(proc: subprocess.Popen) -> None:
+    """Kill a process group: SIGTERM, wait, then SIGKILL. Main thread only."""
+    if proc.poll() is not None:
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, OSError):
+        return
+
+    # Graceful SIGTERM first
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except (ProcessLookupError, OSError):
+        return
+    try:
+        proc.wait(timeout=5)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+
+    # Force SIGKILL
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, OSError):
+        pass
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _cleanup_all_children() -> None:
+    """Kill all tracked child process groups. Main thread only."""
+    for proc in list(_child_procs):
+        _kill_proc_group(proc)
+
+
+def _is_owned_by_current_user(pid: int) -> bool:
+    """Check if a process belongs to the current user via /proc."""
+    try:
+        stat = Path(f"/proc/{pid}/status").read_text()
+        for line in stat.splitlines():
+            if line.startswith("Uid:"):
+                real_uid = int(line.split()[1])
+                return real_uid == os.getuid()
+    except (OSError, ValueError, IndexError):
+        pass
+    return False
+
+
+def _cleanup_stale_port_holders(port: int = _TORCHRUN_DEFAULT_PORT) -> None:
+    """Kill orphaned processes *owned by this user* holding the torchrun port.
+
+    Safety net for cases where process-group cleanup didn't fully work
+    (e.g., after a SIGKILL of this script).
+    """
+    my_pid = os.getpid()
+    pids_to_kill: list[int] = []
+
+    # Try fuser first, then lsof as fallback
+    for cmd in (
+        ["fuser", f"{port}/tcp"],
+        ["lsof", "-ti", f":{port}"],
+    ):
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=5,
+            )
+            raw = (result.stdout.strip() or result.stderr.strip())
+            if result.returncode == 0 and raw:
+                for token in raw.split():
+                    # fuser appends access modifiers (e.g., "12345e", "12346m")
+                    token = token.strip().rstrip("eFfmr")
+                    if token.isdigit():
+                        pid = int(token)
+                        if pid != my_pid and _is_owned_by_current_user(pid):
+                            pids_to_kill.append(pid)
+            if pids_to_kill:
+                break
+        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
+            continue
+
+    for pid in pids_to_kill:
+        try:
+            os.kill(pid, signal.SIGKILL)
+            print(f"  Killed stale process {pid} on port {port}")
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+
+def _signal_handler(signum, _frame):
+    """Handle termination signals by sending SIGTERM to all child groups.
+
+    Only sends signals — never calls proc.wait() — to stay safe when
+    the main thread is already inside proc.wait() (reentrant waitpid
+    would corrupt the child's exit status).
+    """
+    global _shutting_down
+    if _shutting_down:
+        return
+    _shutting_down = True
+    sig_name = signal.Signals(signum).name
+    # os.write is async-signal-safe; print() is not (it acquires a lock
+    # that the interrupted main-thread code may already hold).
+    os.write(sys.stderr.fileno(),
+             f"\n[run_eval_trials] Received {sig_name}, shutting down...\n".encode())
+    for proc in list(_child_procs):
+        _send_sig_to_proc_group(proc, signal.SIGTERM)
+    # Catch the race where Popen returned but _register_child hasn't run yet
+    cur = _current_proc
+    if cur is not None and cur not in _child_procs:
+        _send_sig_to_proc_group(cur, signal.SIGTERM)
+
+
+def _atexit_cleanup():
+    """Fallback cleanup on normal/abnormal exit."""
+    global _shutting_down
+    if _shutting_down:
+        return
+    _shutting_down = True
+    _cleanup_all_children()
+
+
+# ---------------------------------------------------------------------------
 
 
 def find_result_json(directory: Path) -> Path | None:
@@ -60,6 +222,8 @@ def run_single_trial(
     lm_eval_limit: int | None = None,
 ) -> bool:
     """Run a single eval trial. Returns True on success."""
+    global _current_proc
+
     print(f"[Trial {trial_num}/{total}] ...")
 
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -78,10 +242,26 @@ def run_single_trial(
         if lm_eval_limit is not None:
             cmd += ["--lm_eval_limit", str(lm_eval_limit)]
 
-        result = subprocess.run(cmd, cwd=str(repo_root))
+        proc = subprocess.Popen(
+            cmd, cwd=str(repo_root), start_new_session=True,
+        )
+        _current_proc = proc
+        _register_child(proc)
+        try:
+            proc.wait()
+        finally:
+            _unregister_child(proc)
+            _current_proc = None
 
-        if result.returncode != 0:
-            print(f"[Trial {trial_num}/{total}] FAILED (exit code {result.returncode})")
+        # If the signal handler fired, the child was SIGTERM'd.  Do a
+        # full SIGKILL follow-up now that we're back in the main thread
+        # (safe to wait here — proc.wait() above already returned).
+        if _shutting_down:
+            _kill_proc_group(proc)
+            return False
+
+        if proc.returncode != 0:
+            print(f"[Trial {trial_num}/{total}] FAILED (exit code {proc.returncode})")
             return False
 
         result_json = find_result_json(Path(tmp_dir))
@@ -118,6 +298,17 @@ def main():
     trials_dir = experiment_dir / "trials"
     trials_dir.mkdir(parents=True, exist_ok=True)
 
+    # --- Register cleanup handlers ---
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(sig, _signal_handler)
+        except (OSError, ValueError):
+            pass  # SIGHUP unavailable on some platforms
+    atexit.register(_atexit_cleanup)
+
+    # Clean up stale processes from a previous interrupted run
+    _cleanup_stale_port_holders()
+
     print("=============================================")
     print("Multi-Trial MoE Evaluation")
     print("=============================================")
@@ -133,37 +324,53 @@ def main():
 
     # Run trials
     succeeded = 0
+    trials_attempted = 0
     t_start = time.monotonic()
-    for i in range(1, args.num_trials + 1):
-        trial_output = trials_dir / f"trial_{i:03d}.json"
+    try:
+        for i in range(1, args.num_trials + 1):
+            if _shutting_down:
+                print("[run_eval_trials] Shutdown requested, stopping trials.")
+                break
 
-        ok = run_single_trial(
-            trial_num=i,
-            total=args.num_trials,
-            checkpoint_dir=args.checkpoint_dir,
-            config_file=args.config_file,
-            preset=args.preset,
-            skip_lm_eval=skip_lm_eval,
-            output_path=trial_output,
-            script_dir=script_dir,
-            repo_root=repo_root,
-            lm_eval_tasks=args.lm_eval_tasks,
-            lm_eval_limit=args.lm_eval_limit,
-        )
-        if ok:
-            succeeded += 1
-        print()
+            trials_attempted += 1
+            trial_output = trials_dir / f"trial_{i:03d}.json"
+
+            ok = run_single_trial(
+                trial_num=i,
+                total=args.num_trials,
+                checkpoint_dir=args.checkpoint_dir,
+                config_file=args.config_file,
+                preset=args.preset,
+                skip_lm_eval=skip_lm_eval,
+                output_path=trial_output,
+                script_dir=script_dir,
+                repo_root=repo_root,
+                lm_eval_tasks=args.lm_eval_tasks,
+                lm_eval_limit=args.lm_eval_limit,
+            )
+            if ok:
+                succeeded += 1
+            print()
+    finally:
+        # Always clean up ports, even on abnormal exit
+        _cleanup_stale_port_holders()
+        if _shutting_down:
+            print("[run_eval_trials] Cleanup complete.")
 
     elapsed = time.monotonic() - t_start
-    avg_elapsed = elapsed / args.num_trials
+    avg_elapsed = elapsed / max(1, trials_attempted)
 
     print("=============================================")
-    print(f"Trials complete: {succeeded}/{args.num_trials} succeeded")
+    print(f"Trials complete: {succeeded}/{trials_attempted} succeeded"
+          + (f" ({args.num_trials - trials_attempted} skipped)" if _shutting_down else ""))
     print(f"Total elapsed:   {elapsed:.1f}s ({elapsed/3600:.1f}h)")
     print(f"Avg per trial:   {avg_elapsed:.1f}s")
     print("=============================================")
 
     if succeeded == 0:
+        if _shutting_down:
+            print("Interrupted before any trials completed.")
+            sys.exit(130)
         print("Error: All trials failed.", file=sys.stderr)
         sys.exit(1)
 
@@ -177,12 +384,14 @@ def main():
     summary = build_summary(trials, args.experiment_name)
     summary["trial_config"] = {
         "num_trials": args.num_trials,
+        "trials_attempted": trials_attempted,
         "preset": args.preset,
         "skip_lm_eval": skip_lm_eval,
         "checkpoint_dir": args.checkpoint_dir,
         "config_file": args.config_file,
         "elapsed_seconds": elapsed,
         "avg_elapsed_per_trial": avg_elapsed,
+        "interrupted": _shutting_down,
     }
     summary_path = experiment_dir / "summary.json"
     with open(summary_path, "w") as f:
