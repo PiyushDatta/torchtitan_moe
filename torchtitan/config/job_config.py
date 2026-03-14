@@ -489,6 +489,12 @@ class Parallelism:
     remaining tokens skip via residual connection. Only applies to MoE layers.
     """
 
+    residual_routing: bool = False
+    """
+    Route MoE experts based on the attention residual instead of the full
+    hidden state. Combats routing collapse in deep layers.
+    """
+
 
 @dataclass
 class Checkpoint:

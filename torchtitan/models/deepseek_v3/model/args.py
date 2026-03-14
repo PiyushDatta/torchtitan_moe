@@ -119,6 +119,7 @@ class DeepSeekV3ModelArgs(BaseModelArgs):
         self.moe_impl = job_config.parallelism.expert_parallel_comm_backend
 
         self.moe_args.mod_capacity_ratio = job_config.parallelism.mod_capacity_ratio
+        self.moe_args.residual_routing = job_config.parallelism.residual_routing
 
     def get_nparams_and_flops(self, model: nn.Module, seq_len: int) -> tuple[int, int]:
         return get_moe_model_nparams_and_flops(

@@ -385,11 +385,12 @@ class TransformerBlock(nn.Module):
         Returns:
             torch.Tensor: Output tensor with the same shape as the input.
         """
-        x = x + self.attention(
+        attn_out = self.attention(
             self.attention_norm(x), freqs_cis, attention_masks, positions
         )
+        x = x + attn_out
         if self.moe_enabled:
-            x = x + self.moe(self.ffn_norm(x))
+            x = x + self.moe(self.ffn_norm(x), routing_input=attn_out)
         else:
             x = x + self.feed_forward(self.ffn_norm(x))
         return x

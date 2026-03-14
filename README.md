@@ -57,6 +57,13 @@ MoD ([arxiv.org/abs/2404.02258](https://arxiv.org/abs/2404.02258)) reduces FLOPs
 mod_capacity_ratio = 0.125  # process 12.5% of tokens; 0.0 = disabled (default)
 ```
 
+## Residual Routing
+Standard MoE routes tokens based on the full hidden state, which converges across tokens in deep layers — causing routing collapse (a few experts receive most tokens while others starve). Residual routing fixes this by routing on the **attention residual** (what the attention layer contributed) instead. This signal stays diverse at all depths because different tokens need different refinements, even when their accumulated representations have converged. To enable, add to your TOML config:
+```toml
+[parallelism]
+residual_routing = true  # false = standard routing (default)
+```
+
 ~~~~~~~~~~~~
 ## torchtitan_moe fork change 1 end
 ~~~~~~~~~~~~

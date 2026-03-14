@@ -41,6 +41,9 @@ class MoEArgs:
     # Mixture of Depths
     mod_capacity_ratio: float = 0.0  # set from Parallelism config; 0.0 = disabled
 
+    # Residual routing
+    residual_routing: bool = False  # set from Parallelism config
+
 
 # can be used as dense FFN layer or shared experts in MoE layers
 class FeedForward(nn.Module):
@@ -471,10 +474,14 @@ class MoE(nn.Module):
             persistent=False,
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, routing_input: torch.Tensor | None = None
+    ) -> torch.Tensor:
         """
         Args:
             x (torch.Tensor): Input tensor with shape ``(bs, slen, dim)``.
+            routing_input (torch.Tensor | None): Ignored in base MoE.
+                Subclasses (e.g. ResidualRoutedMoE) use this for routing.
 
         Returns:
             out (torch.Tensor): Output tensor with shape ``(bs, slen, dim)``.
@@ -586,6 +593,13 @@ def build_moe(
             f"DeepEP MoE: num_experts={args.num_experts}, top_k={args.top_k}, dim={dim}, hidden_dim={hidden_dim}"
         )
         return DeepEPMoE(moe_args=args, dim=dim, hidden_dim=hidden_dim)
+    elif args.residual_routing:
+        from .residual_moe import ResidualRoutedMoE
+
+        logger.info(
+            f"Residual-Routed MoE: num_experts={args.num_experts}, top_k={args.top_k}, dim={dim}, hidden_dim={hidden_dim}"
+        )
+        return ResidualRoutedMoE(args, dim=dim, hidden_dim=hidden_dim)
     elif args.mod_capacity_ratio > 0:
         # Mixture of Depths
         # abs: https://arxiv.org/abs/2404.02258
