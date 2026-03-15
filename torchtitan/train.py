@@ -541,6 +541,11 @@ class Trainer(torch.distributed.checkpoint.stateful.Stateful):
                     # This ensures gradients are properly normalized across all microbatches
                     loss = loss_sum / global_valid_tokens
 
+                    # Add MoD auxiliary loss if present
+                    model = model_parts[0]
+                    if hasattr(model, "mod_aux_loss"):
+                        loss = loss + model.mod_aux_loss
+
                 # need to free pred before bwd to avoid peaking memory
                 del pred
                 loss.backward()

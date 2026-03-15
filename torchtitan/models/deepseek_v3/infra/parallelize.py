@@ -27,6 +27,7 @@ from torchtitan.models.llama4.infra.parallelize import (
     apply_fsdp,
     apply_moe_ep_tp,
 )
+from torchtitan.models.moe.mod import MoDTransformerBlock
 from torchtitan.tools.logging import logger
 
 # for selective op activation checkpointing
@@ -70,6 +71,20 @@ def parallelize_deepseekv3(
             f"Context Parallel only supports SDPA attention. "
             f"Got attn_type='{attn_type}'. "
             f"FlexAttention and varlen attention are not supported with CP."
+        )
+
+    mod_enabled = job_config.parallelism.mod_capacity_ratio > 0
+    if mod_enabled and parallel_dims.tp_enabled:
+        raise NotImplementedError(
+            "Mixture of Depths (MoD) is not compatible with Tensor Parallelism (TP > 1). "
+            "MoD selects token subsets that bypass the TP/Sequence Parallel data flow. "
+            "Please set tensor_parallel_degree=1 or disable MoD (mod_capacity_ratio=0)."
+        )
+    if mod_enabled and parallel_dims.cp_enabled:
+        raise NotImplementedError(
+            "Mixture of Depths (MoD) is not compatible with Context Parallelism (CP > 1). "
+            "MoD selects token subsets that bypass the CP attention mechanism. "
+            "Please set context_parallel_degree=1 or disable MoD (mod_capacity_ratio=0)."
         )
 
     if parallel_dims.tp_enabled:
@@ -254,9 +269,14 @@ def apply_non_moe_tp(
     positions_sharding = Replicate() if cp_enabled else None
     # pyrefly: ignore [not-callable]
     for transformer_block in model.layers.values():
+        # For MoD-wrapped blocks, the inner TransformerBlock is at .block
+        is_mod = isinstance(transformer_block, MoDTransformerBlock)
+        prefix = "block." if is_mod else ""
+        inner_block = transformer_block.block if is_mod else transformer_block
+
         layer_plan = {
-            "attention_norm": SequenceParallel(),
-            "attention": prepare_module_input(
+            f"{prefix}attention_norm": SequenceParallel(),
+            f"{prefix}attention": prepare_module_input(
                 input_layouts=(Shard(1), Replicate(), None, positions_sharding),
                 desired_input_layouts=(
                     Replicate(),
@@ -268,20 +288,20 @@ def apply_non_moe_tp(
             # NOTE: use_local_output=False make the output to be a DTensor instead of a plain Tensor
             # so that the intermedidate results k is generated as a DTensor and its gradient is
             # correctly handled by the autograd engine.
-            "attention.wkv_a": NoParallel(use_local_output=False),
-            "attention.wkv_b": colwise_parallel(use_local_output=False),
-            "attention.kv_norm": NoParallel(use_local_output=False),
+            f"{prefix}attention.wkv_a": NoParallel(use_local_output=False),
+            f"{prefix}attention.wkv_b": colwise_parallel(use_local_output=False),
+            f"{prefix}attention.kv_norm": NoParallel(use_local_output=False),
             # NOTE: use_local_output=True so that the inputs to FlexAttention are plain Tensors
-            "attention.inner_attention": attention_kernel_plan,
-            "attention.wo": rowwise_parallel(output_layouts=Shard(1)),
-            "ffn_norm": SequenceParallel(),
+            f"{prefix}attention.inner_attention": attention_kernel_plan,
+            f"{prefix}attention.wo": rowwise_parallel(output_layouts=Shard(1)),
+            f"{prefix}ffn_norm": SequenceParallel(),
         }
 
         # pyrefly: ignore [missing-attribute]
-        if transformer_block.attention.q_lora_rank == 0:
+        if inner_block.attention.q_lora_rank == 0:
             layer_plan.update(
                 {
-                    "attention.wq": colwise_parallel(
+                    f"{prefix}attention.wq": colwise_parallel(
                         use_local_output=False
                     ),  # This is only used when q_lora_rank==0
                 }
@@ -289,23 +309,23 @@ def apply_non_moe_tp(
         else:
             layer_plan.update(
                 {
-                    "attention.wq_a": NoParallel(use_local_output=False),
-                    "attention.wq_b": colwise_parallel(use_local_output=False),
-                    "attention.q_norm": NoParallel(use_local_output=False),
+                    f"{prefix}attention.wq_a": NoParallel(use_local_output=False),
+                    f"{prefix}attention.wq_b": colwise_parallel(use_local_output=False),
+                    f"{prefix}attention.q_norm": NoParallel(use_local_output=False),
                 }
             )
 
         # pyrefly: ignore [missing-attribute]
-        if not transformer_block.moe_enabled:
+        if not inner_block.moe_enabled:
             layer_plan.update(
                 {
-                    "feed_forward": prepare_module_input(
+                    f"{prefix}feed_forward": prepare_module_input(
                         input_layouts=(Shard(1),),
                         desired_input_layouts=(Replicate(),),
                     ),
-                    "feed_forward.w1": colwise_parallel(),
-                    "feed_forward.w2": rowwise_parallel(output_layouts=Shard(1)),
-                    "feed_forward.w3": colwise_parallel(),
+                    f"{prefix}feed_forward.w1": colwise_parallel(),
+                    f"{prefix}feed_forward.w2": rowwise_parallel(output_layouts=Shard(1)),
+                    f"{prefix}feed_forward.w3": colwise_parallel(),
                 }
             )
 

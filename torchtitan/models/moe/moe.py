@@ -600,19 +600,9 @@ def build_moe(
             f"Residual-Routed MoE: num_experts={args.num_experts}, top_k={args.top_k}, dim={dim}, hidden_dim={hidden_dim}"
         )
         return ResidualRoutedMoE(args, dim=dim, hidden_dim=hidden_dim)
-    elif args.mod_capacity_ratio > 0:
-        # Mixture of Depths
-        # abs: https://arxiv.org/abs/2404.02258
-        # pdf: https://arxiv.org/pdf/2404.02258
-        from .mod import MixtureOfDepths
-
-        logger.info(
-            f"Mixture of Depths enabled: capacity_ratio={args.mod_capacity_ratio}, num_experts={args.num_experts}, top_k={args.top_k}, dim={dim}, hidden_dim={hidden_dim}"
-        )
-        return MixtureOfDepths(
-            args, dim=dim, hidden_dim=hidden_dim,
-            capacity_ratio=args.mod_capacity_ratio,
-        )
+    # NOTE: Mixture of Depths (MoD) is now applied at the TransformerBlock level
+    # (wrapping the entire block including attention), not at the MoE level.
+    # See torchtitan/models/moe/mod.py and model.py for the implementation.
 
     logger.info(
         f"Standard MoE: num_experts={args.num_experts}, top_k={args.top_k}, dim={dim}, hidden_dim={hidden_dim}"

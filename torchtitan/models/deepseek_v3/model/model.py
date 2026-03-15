@@ -8,6 +8,7 @@ import math
 from typing import cast
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch.nn.attention.flex_attention import and_masks, BlockMask
 from torchtitan.components.tokenizer import BaseTokenizer
@@ -19,6 +20,7 @@ from torchtitan.models.attention import (
     ScaledDotProductAttentionWrapper,
 )
 from torchtitan.models.moe import build_moe, FeedForward, MoE
+from torchtitan.models.moe.mod import MoDTransformerBlock
 from torchtitan.protocols.model import AttentionMasksType
 from torchtitan.protocols.train_spec import ModelProtocol
 
@@ -304,15 +306,19 @@ class Attention(nn.Module):
         k = k.transpose(1, 2)  # (bsz, n_heads, seqlen, qk_head_dim)
         v = v.transpose(1, 2)  # (bsz, n_heads, seqlen, v_head_dim)
 
-        match self.attn_type:
-            case "flex":
-                assert isinstance(attention_masks, BlockMask)
-                output = self.inner_attention(
-                    q, k, v, block_mask=attention_masks, scale=self.softmax_scale
-                )
-            case _:
-                assert attention_masks is None
-                output = self.inner_attention(q, k, v, scale=self.softmax_scale)
+        if isinstance(attention_masks, BlockMask):
+            # FlexAttention path (normal full-sequence forward)
+            output = self.inner_attention(
+                q, k, v, block_mask=attention_masks, scale=self.softmax_scale
+            )
+        elif isinstance(attention_masks, torch.Tensor):
+            # Tensor mask path (used by MoD for selected-token subsets)
+            output = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=attention_masks, scale=self.softmax_scale
+            )
+        else:
+            # No mask (SDPA path)
+            output = self.inner_attention(q, k, v, scale=self.softmax_scale)
 
         # Reshape and project output
         output = output.transpose(
@@ -419,8 +425,20 @@ class DeepSeekV3Model(ModelProtocol):
         )
 
         self.layers = torch.nn.ModuleDict()
+        mod_ratio = model_args.moe_args.mod_capacity_ratio
         for layer_id in range(model_args.n_layers):
-            self.layers[str(layer_id)] = TransformerBlock(layer_id, model_args)
+            block = TransformerBlock(layer_id, model_args)
+            is_moe_layer = layer_id >= model_args.n_dense_layers
+            # Apply MoD to every other MoE layer (per paper recommendation)
+            if mod_ratio > 0 and is_moe_layer and layer_id % 2 != 0:
+                from torchtitan.tools.logging import logger
+                logger.info(
+                    f"MoD layer {layer_id}: capacity_ratio={mod_ratio}"
+                )
+                block = MoDTransformerBlock(
+                    block, dim=model_args.dim, capacity_ratio=mod_ratio,
+                )
+            self.layers[str(layer_id)] = block
 
         self.norm = nn.RMSNorm(model_args.dim)
         self.output = nn.Linear(
@@ -439,7 +457,7 @@ class DeepSeekV3Model(ModelProtocol):
             nn.init.normal_(self.tok_embeddings.weight)
         for layer in self.layers.values():
             if layer is not None:
-                cast(TransformerBlock, layer).init_weights(buffer_device=buffer_device)
+                layer.init_weights(buffer_device=buffer_device)
         if self.norm is not None:
             self.norm.reset_parameters()
         final_out_std = self.model_args.dim**-0.5
@@ -498,8 +516,15 @@ class DeepSeekV3Model(ModelProtocol):
 
         h = self.tok_embeddings(tokens) if self.tok_embeddings is not None else tokens
 
+        mod_aux_loss = torch.tensor(0.0, device=h.device)
         for layer in self.layers.values():
             h = layer(h, self.freqs_cis, attention_masks, positions)
+            if hasattr(layer, "mod_router"):
+                mod_aux_loss = mod_aux_loss + layer.aux_loss * layer.aux_loss_coeff
+
+        # Store for access by loss function
+        self.mod_aux_loss = mod_aux_loss
+
         h = self.norm(h) if self.norm is not None else h
         output = self.output(h) if self.output is not None else h
         return output

@@ -45,6 +45,7 @@ from torchtitan.models.llama3.infra.parallelize import (
     disable_fsdp_gradient_division,
 )
 from torchtitan.models.moe import moe as moe_module
+from torchtitan.models.moe.mod import MoDTransformerBlock
 from torchtitan.tools.logging import logger
 
 # for selective op activation checkpointing
@@ -514,11 +515,16 @@ def apply_moe_ep_tp(
         if not transformer_block.moe_enabled:
             continue
 
+        # For MoD-wrapped blocks, plan keys must be prefixed with "block."
+        # so parallelize_module resolves to the inner TransformerBlock's submodules
+        is_mod = isinstance(transformer_block, MoDTransformerBlock)
+        prefix = "block." if is_mod else ""
+
         if tp_mesh is not None:
             moe_layer_plan = {
                 # input / output sharding on the seqlen dim
                 # all-gather for input, reduce-scatter for output
-                "moe": PrepareModuleInputOutput(
+                f"{prefix}moe": PrepareModuleInputOutput(
                     input_layouts=(Shard(1),),
                     desired_input_layouts=(Replicate(),),
                     use_local_input=True,
@@ -526,25 +532,25 @@ def apply_moe_ep_tp(
                     desired_output_layouts=(Shard(1),),
                 ),
                 # replicate computation for the router
-                "moe.router.gate": NoParallel(),
+                f"{prefix}moe.router.gate": NoParallel(),
             }
             if ep_mesh is not None and etp_mesh is None:
                 # If TP is borrowed for EP, then split the tokens across TP ranks so that
                 # the reorderer, the all-to-all comms, and routed experts computation
                 # are effectively running Sequence Parallel (split along the folded bs*slen dim)
                 # pyrefly: ignore [no-matching-overload]
-                moe_layer_plan.update({"moe.reorderer": ReordererSequenceParallel()})
+                moe_layer_plan.update({f"{prefix}moe.reorderer": ReordererSequenceParallel()})
             # pyrefly: ignore [missing-attribute]
             if transformer_block.moe.shared_experts is not None:
                 # input Replicate, output Partial
                 # pyrefly: ignore [no-matching-overload]
                 moe_layer_plan.update(
                     {
-                        "moe.shared_experts.w1": ColwiseParallel(),
-                        "moe.shared_experts.w2": RowwiseParallel(
+                        f"{prefix}moe.shared_experts.w1": ColwiseParallel(),
+                        f"{prefix}moe.shared_experts.w2": RowwiseParallel(
                             output_layouts=Partial()
                         ),
-                        "moe.shared_experts.w3": ColwiseParallel(),
+                        f"{prefix}moe.shared_experts.w3": ColwiseParallel(),
                     }
                 )
             parallelize_module(
@@ -613,11 +619,23 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig, ep_enabled: b
             else:
                 block = transformer_block
 
-            for attr_name, submod in block.named_children():
-                assert getattr(block, attr_name) == getattr(
-                    transformer_block, attr_name
+            # For MoD-wrapped blocks, we need to compile the inner
+            # TransformerBlock's children (where MoE lives), not
+            # MoDTransformerBlock's children (which are just "block"
+            # and "mod_router").
+            if isinstance(block, MoDTransformerBlock):
+                # Compile the MoD router directly
+                block.mod_router = torch.compile(
+                    block.mod_router,
+                    backend=compile_config.backend,
+                    fullgraph=True,
                 )
+                # Use the inner TransformerBlock for per-submodule compile
+                inner_block = block.block
+            else:
+                inner_block = block
 
+            for attr_name, submod in inner_block.named_children():
                 if isinstance(submod, moe_module.MoE):
                     # avoid graph breaking on the GroupedExperts' FSDP hooks
                     # by wrapping each submod's forward instead of their __call__
@@ -636,7 +654,7 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig, ep_enabled: b
                         )
                 else:
                     setattr(
-                        block,
+                        inner_block,
                         attr_name,
                         torch.compile(
                             submod, backend=compile_config.backend, fullgraph=True
