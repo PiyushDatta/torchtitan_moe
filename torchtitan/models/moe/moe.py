@@ -583,7 +583,8 @@ class MoE(nn.Module):
 
 
 def build_moe(
-    args: MoEArgs, dim: int, hidden_dim: int, moe_impl: str = "standard"
+    args: MoEArgs, dim: int, hidden_dim: int, moe_impl: str = "standard",
+    mod_wrapped: bool = False,
 ) -> nn.Module:
     """Factory for MoE with different backends: 'standard' (all-to-all) or 'deepep' (DeepEP)."""
     if moe_impl == "deepep":
@@ -604,7 +605,8 @@ def build_moe(
     # (wrapping the entire block including attention), not at the MoE level.
     # See torchtitan/models/moe/mod.py and model.py for the implementation.
 
+    label = "MoE (MoD-wrapped)" if mod_wrapped else "Standard MoE"
     logger.info(
-        f"Standard MoE: num_experts={args.num_experts}, top_k={args.top_k}, dim={dim}, hidden_dim={hidden_dim}"
+        f"{label}: num_experts={args.num_experts}, top_k={args.top_k}, dim={dim}, hidden_dim={hidden_dim}"
     )
     return MoE(args, dim=dim, hidden_dim=hidden_dim)

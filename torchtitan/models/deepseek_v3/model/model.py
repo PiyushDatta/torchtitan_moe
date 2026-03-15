@@ -351,7 +351,7 @@ class TransformerBlock(nn.Module):
     Transformer block with attention and feed-forward layers.
     """
 
-    def __init__(self, layer_id: int, model_args: DeepSeekV3ModelArgs):
+    def __init__(self, layer_id: int, model_args: DeepSeekV3ModelArgs, mod_wrapped: bool = False):
 
         super().__init__()
         self.attention = Attention(model_args)
@@ -365,6 +365,7 @@ class TransformerBlock(nn.Module):
                 dim=model_args.dim,
                 hidden_dim=model_args.moe_inter_dim,
                 moe_impl=model_args.moe_impl,
+                mod_wrapped=mod_wrapped,
             )
         else:
             self.feed_forward = FeedForward(model_args.dim, model_args.inter_dim)
@@ -427,13 +428,16 @@ class DeepSeekV3Model(ModelProtocol):
         self.layers = torch.nn.ModuleDict()
         mod_ratio = model_args.moe_args.mod_capacity_ratio
         for layer_id in range(model_args.n_layers):
-            block = TransformerBlock(layer_id, model_args)
             is_moe_layer = layer_id >= model_args.n_dense_layers
+            is_mod_layer = mod_ratio > 0 and is_moe_layer and layer_id % 2 != 0
+            block = TransformerBlock(layer_id, model_args, mod_wrapped=is_mod_layer)
             # Apply MoD to every other MoE layer (per paper recommendation)
-            if mod_ratio > 0 and is_moe_layer and layer_id % 2 != 0:
+            if is_mod_layer:
                 from torchtitan.tools.logging import logger
                 logger.info(
-                    f"MoD layer {layer_id}: capacity_ratio={mod_ratio}"
+                    f"MoE + MoD layer {layer_id}: capacity_ratio={mod_ratio}, "
+                    f"num_experts={model_args.moe_args.num_experts}, "
+                    f"top_k={model_args.moe_args.top_k}"
                 )
                 block = MoDTransformerBlock(
                     block, dim=model_args.dim, capacity_ratio=mod_ratio,
