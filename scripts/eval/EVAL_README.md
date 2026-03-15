@@ -102,7 +102,7 @@ AGGREGATED RESULTS: baseline (50 trials)
 - `run_eval_moe.py` - Launcher that auto-detects GPUs and invokes torchrun
 - `run_eval_trials.py` - Multi-trial runner for statistical comparisons
 - `aggregate_trials.py` - Aggregates trial results into summary JSON with mean/stdev
-- `compare_eval_results.py` - Compare two eval result files
+- `compare_eval_results.py` - Compare two eval results (supports both summary.json and individual trial files)
 - `torchtitan_lm_eval.py` - Custom lm_eval wrapper for torchtitan models
 - `eval_convert_to_hf.py` - Standalone script to convert checkpoints to HuggingFace format
 
@@ -170,6 +170,14 @@ torchrun --nproc_per_node=4 scripts/eval/eval_moe_model.py \
 | `--lm_eval_tasks` | from preset | Override lm_eval tasks (e.g. hellaswag arc_easy mmlu) |
 | `--lm_eval_limit` | from preset | Limit examples per lm_eval task |
 
+### compare_eval_results.py
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `result_a` | (required) | Path to first result file (summary.json or trial file) |
+| `result_b` | (required) | Path to second result file (summary.json or trial file) |
+| `--json` | off | Output as JSON instead of formatted table |
+
 ## Requirements
 
 ### Minimum
@@ -216,16 +224,36 @@ Multi-trial results are saved to `./results/<experiment_name>_<timestamp>/`.
 
 ## Comparing Results
 
-### Two Single Results
+### Two Multi-Trial Experiments (Recommended)
+
+Compare `summary.json` files from multi-trial runs. This is the most robust comparison since it uses averaged metrics across many trials with standard deviations:
 
 ```bash
 python scripts/eval/compare_eval_results.py \
-    ./outputs/eval/eval_results_20260129_212638.json \
-    ./outputs/eval/eval_results_20260129_220145.json
+    results/baseline_20260313/summary.json \
+    results/mod_20260313/summary.json
+```
 
-# JSON output for programmatic use
+The script auto-detects summary format and will:
+- Show mean +/- stdev for all metrics
+- Aggregate lm_eval scores from trial files
+- Display config differences between the two models
+- Determine an overall winner
+
+### Two Single Trial Results
+
+```bash
+python scripts/eval/compare_eval_results.py \
+    results/exp_a/trials/trial_001.json \
+    results/exp_b/trials/trial_001.json
+```
+
+### JSON Output
+
+```bash
+# For programmatic use
 python scripts/eval/compare_eval_results.py --json \
-    result_a.json result_b.json
+    results/exp_a/summary.json results/exp_b/summary.json
 ```
 
 ### Multiple Checkpoints
@@ -238,25 +266,6 @@ for step in 500 1000 1500 2000; do
         --output_dir ./outputs/eval/step-${step} \
         --skip_lm_eval
 done
-```
-
-### Multi-Trial Summaries
-
-Compare `summary.json` files from different experiments:
-
-```python
-import json
-
-with open("results/baseline_20260309/summary.json") as f:
-    baseline = json.load(f)
-with open("results/mod_0.125_20260309/summary.json") as f:
-    mod = json.load(f)
-
-for name, data in [("baseline", baseline), ("mod", mod)]:
-    avg = data["averages"]
-    r = avg["routing"]["overall"]
-    print(f"{name}: CV={r['avg_cv_mean']:.4f}+/-{r['avg_cv_stdev']:.4f}, "
-          f"Gini={r['avg_gini_mean']:.4f}+/-{r['avg_gini_stdev']:.4f}")
 ```
 
 ## Key Metrics

@@ -64,6 +64,116 @@ Standard MoE routes tokens based on the full hidden state, which converges acros
 residual_routing = true  # false = standard routing (default)
 ```
 
+## Evals done so far
+
+### MoE baseline vs MoD ([arxiv.org/abs/2404.02258])
+```
+(torchtitan_moe) [piydatta@devvm48954.cln0 /data/repos/torchtitan_moe (main)]$ with-proxy python3 scripts/eval/compare_eval_results.py results/deepseek_16B_4xa100_moe_baseline_20260313_012550/summary.json results/deepseek_16B_mod_4xa100_20260313_210330/summary.json
+
+==================================================================================
+                             MoE EVALUATION COMPARISON
+==================================================================================
+
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                                 MODEL COMPARISON                                 │
+├────────────────────────────────────────────────────────────────────────────────┴
+    Model A:  deepseek_16B_4xa100_moe_baseline  (20 trials)
+    Model B:  deepseek_16B_mod_4xa100  (20 trials)
+
+┌────────────────────────────────┬──────────────────────┬──────────────────────┬────────────┬──────────┐
+│ Metric                         │              Model A │              Model B │     % Diff │  Winner  │
+├────────────────────────────────┼──────────────────────┼──────────────────────┼────────────┼──────────┤
+│   ROUTING EFFICIENCY           │                      │                      │            │          │
+├────────────────────────────────┼──────────────────────┼──────────────────────┼────────────┼──────────┤
+│     Avg Gini Coefficient       │               0.6654 │               0.6738 │     +1.26% │    A     │
+│     Avg Coeff. of Variation    │               1.5713 │               1.5743 │     +0.19% │    A     │
+│     Avg Expert Utilization     │               0.9523 │               0.9422 │     -1.05% │    A     │
+├────────────────────────────────┼──────────────────────┼──────────────────────┼────────────┼──────────┤
+│   INFERENCE PERFORMANCE        │                      │                      │            │          │
+├────────────────────────────────┼──────────────────────┼──────────────────────┼────────────┼──────────┤
+│     Latency (ms)               │  35,828.82 ±619.8430 │  64,661.91 ±2,219.82 │    +80.47% │    A     │
+│     Throughput (tokens/sec)    │       3.5735 ±0.0609 │       1.9817 ±0.0658 │    -44.55% │    A     │
+│     Memory Allocated (GB)      │              17.2886 │              17.2885 │     -0.00% │    B     │
+│     Memory Reserved (GB)       │              18.3421 │              18.3420 │     -0.00% │    B     │
+├────────────────────────────────┼──────────────────────┼──────────────────────┼────────────┼──────────┤
+│   COMPUTATIONAL COST           │                      │                      │            │          │
+├────────────────────────────────┼──────────────────────┼──────────────────────┼────────────┼──────────┤
+│     TFLOPs                     │        7748241063936 │        7748241063936 │          - │   tie    │
+│     Active Params (B)          │              15.7065 │              15.7065 │          - │   tie    │
+├────────────────────────────────┼──────────────────────┼──────────────────────┼────────────┼──────────┤
+│   MODEL ACCURACY               │                      │                      │            │          │
+├────────────────────────────────┼──────────────────────┼──────────────────────┼────────────┼──────────┤
+│     hellaswag (acc)            │               0.3280 │               0.3140 │     -4.27% │    A     │
+│     hellaswag (acc_norm)       │               0.3200 │               0.3120 │     -2.50% │    A     │
+│     arc_easy (acc)             │               0.2960 │               0.3260 │    +10.14% │    B     │
+│     arc_easy (acc_norm)        │               0.3440 │               0.3560 │     +3.49% │    B     │
+│     mmlu_abstract_algebra (acc │               0.2200 │               0.2200 │          - │   tie    │
+│     mmlu_anatomy (acc)         │               0.1852 │               0.1778 │     -4.00% │    A     │
+│     mmlu_astronomy (acc)       │               0.1842 │               0.1776 │     -3.57% │    A     │
+│     mmlu_college_biology (acc) │               0.2639 │               0.2708 │     +2.63% │    B     │
+│     mmlu_college_chemistry (ac │               0.1900 │               0.1900 │          - │   tie    │
+│     mmlu_college_computer_scie │               0.2400 │               0.2600 │     +8.33% │    B     │
+│     mmlu_college_mathematics ( │               0.2100 │               0.2100 │          - │   tie    │
+│     mmlu_college_physics (acc) │               0.2255 │               0.2157 │     -4.35% │    A     │
+│     mmlu_computer_security (ac │               0.2800 │               0.2800 │          - │   tie    │
+│     mmlu_conceptual_physics (a │               0.2638 │               0.2638 │          - │   tie    │
+│     mmlu_electrical_engineerin │               0.2414 │               0.2414 │          - │   tie    │
+│     mmlu_elementary_mathematic │               0.2090 │               0.2090 │          - │   tie    │
+│     mmlu_high_school_biology ( │               0.1839 │               0.1871 │     +1.75% │    B     │
+│     mmlu_high_school_chemistry │               0.1576 │               0.1724 │     +9.38% │    B     │
+│     mmlu_high_school_computer_ │               0.2600 │               0.2600 │          - │   tie    │
+│     mmlu_high_school_mathemati │               0.2074 │               0.2111 │     +1.79% │    B     │
+│     mmlu_high_school_physics ( │               0.1921 │               0.1921 │          - │   tie    │
+│     mmlu_high_school_statistic │               0.1528 │               0.1528 │          - │   tie    │
+│     mmlu_machine_learning (acc │               0.3214 │               0.3214 │          - │   tie    │
+│     mmlu_stem (acc)            │               0.2134 │               0.2150 │     +0.74% │    B     │
+├────────────────────────────────┼──────────────────────┼──────────────────────┼────────────┼──────────┤
+│   EVALUATION TIME              │                      │                      │            │          │
+├────────────────────────────────┼──────────────────────┼──────────────────────┼────────────┼──────────┤
+│     Avg Walltime (seconds)     │    1,695.03 ±16.5112 │    2,930.56 ±72.7995 │    +72.89% │    A     │
+└────────────────────────────────┴──────────────────────┴──────────────────────┴────────────┴──────────┘
+
+┌────────────────────────────────────────────────────────────────────────┐
+│                                 SUMMARY                                  │
+├────────────────────────────────────────────────────────────────────────┤
+│   A = deepseek_16B_4xa100_mo...                                        │
+│   B = deepseek_16B_mod_4xa100                                          │
+├────────────────────────────────────────────────────────────────────────┤
+│   ROUTING EFFICIENCY:        A (deepseek_16B_4xa100_mo...) wins 3-0    │
+│   INFERENCE PERFORMANCE:     tied (2-2)                                │
+│   COMPUTATIONAL COST:        tied (all same)                           │
+│   MODEL ACCURACY:            B (deepseek_16B_mod_4xa100) wins 8-5      │
+│   EVALUATION TIME:           A (deepseek_16B_4xa100_mo...) wins 1-0    │
+├────────────────────────────────────────────────────────────────────────┤
+│   Total:  A: 11 wins  |  B: 10 wins  |  Ties: 13                       │
+├────────────────────────────────────────────────────────────────────────┤
+│   OVERALL WINNER: deepseek_16B_4xa100_moe_baseline                     │
+└────────────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────────────────────┐
+│                        INTERPRETATION GUIDE                        │
+├────────────────────────────────────────────────────────────────────┤
+│ Winner: A = Model A is better  |  B = Model B is better            │
+├────────────────────────────────────────────────────────────────────┤
+│ ROUTING EFFICIENCY                                                 │
+│   Gini Coefficient:        Lower is better (0=perfect)             │
+│   Coeff. of Variation:     Lower is better                         │
+│   Expert Utilization:      Higher is better (1.0=100%)             │
+├────────────────────────────────────────────────────────────────────┤
+│ INFERENCE PERFORMANCE                                              │
+│   Latency:                 Lower is better                         │
+│   Throughput:              Higher is better                        │
+│   Memory:                  Lower is better                         │
+├────────────────────────────────────────────────────────────────────┤
+│ COMPUTATIONAL COST                                                 │
+│   TFLOPs:                  Lower = more efficient                  │
+│   Active Params:           Lower = more efficient                  │
+├────────────────────────────────────────────────────────────────────┤
+│ MODEL ACCURACY (lm_eval)                                           │
+│   acc / acc_norm:          Higher is better                        │
+└────────────────────────────────────────────────────────────────────┘
+```
+
 ~~~~~~~~~~~~
 ## torchtitan_moe fork change 1 end
 ~~~~~~~~~~~~
