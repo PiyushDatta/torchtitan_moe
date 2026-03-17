@@ -1,0 +1,541 @@
+{
+  "experiment_name": "deepseek_16B_mod_4xa100",
+  "num_trials": 18,
+  "checkpoint_dir": "outputs/checkpoint/step-1000",
+  "config": {
+    "job": {
+      "description": "DeepSeek-V3 MoE 16B model training (4x A100 80GB)",
+      "dump_folder": "./outputs"
+    },
+    "model": {
+      "name": "deepseek_v3",
+      "flavor": "16B"
+    },
+    "training": {
+      "seq_len": 4096,
+      "local_batch_size": 12
+    },
+    "parallelism": {
+      "data_parallel_shard_degree": -1,
+      "data_parallel_replicate_degree": 1,
+      "tensor_parallel_degree": 1,
+      "pipeline_parallel_degree": 1,
+      "expert_parallel_degree": 4,
+      "context_parallel_degree": 1
+    }
+  },
+  "model_args": {
+    "_enforced": "This field is used to enforce all fields have defaults.",
+    "max_batch_size": 8,
+    "max_seq_len": 4096,
+    "vocab_size": 102400,
+    "dim": 2048,
+    "inter_dim": 10944,
+    "moe_inter_dim": 1408,
+    "n_layers": 27,
+    "n_dense_layers": 1,
+    "n_heads": 16,
+    "norm_eps": 1e-05,
+    "moe_args": {
+      "num_experts": 64,
+      "num_shared_experts": 2,
+      "score_func": "softmax",
+      "route_norm": false,
+      "route_scale": 1.0,
+      "gate_bias": false,
+      "score_before_experts": false,
+      "top_k": 6,
+      "num_expert_groups": null,
+      "num_limited_groups": null,
+      "use_grouped_mm": false,
+      "load_balance_coeff": 0.001,
+      "_debug_force_load_balance": false,
+      "mod_capacity_ratio": 0.125,
+      "residual_routing": false
+    },
+    "moe_impl": "standard",
+    "expert_parallel_comm_backend": "standard",
+    "q_lora_rank": 0,
+    "kv_lora_rank": 512,
+    "qk_nope_head_dim": 128,
+    "qk_rope_head_dim": 64,
+    "v_head_dim": 128,
+    "attn_type": "flex",
+    "attn_mask_type": "block_causal",
+    "original_seq_len": 4096,
+    "rope_theta": 10000.0,
+    "rope_factor": 40,
+    "beta_fast": 32,
+    "beta_slow": 1,
+    "mscale": 0.7
+  },
+  "averages": {
+    "routing": {
+      "overall": {
+        "avg_cv_mean": 1.4821769280081805,
+        "avg_cv_stdev": 0.002848210233541554,
+        "avg_gini_mean": 0.623308306419184,
+        "avg_gini_stdev": 0.0007046596113702325,
+        "avg_utilization_mean": 0.9570980235042735,
+        "avg_utilization_stdev": 0.00521524026449246
+      },
+      "per_layer": {
+        "layer_1": {
+          "cv_mean": 0.13616229473534242,
+          "cv_stdev": 0.0028395945762865033,
+          "gini_mean": 0.07622364624924521,
+          "gini_stdev": 0.0015963988304463312,
+          "utilization_mean": 1.0,
+          "utilization_stdev": 0.0,
+          "n_trials": 18
+        },
+        "layer_2": {
+          "cv_mean": 0.4637833771882234,
+          "cv_stdev": 0.0026405265919233344,
+          "gini_mean": 0.2621403390389902,
+          "gini_stdev": 0.001647210829025898,
+          "utilization_mean": 1.0,
+          "utilization_stdev": 0.0,
+          "n_trials": 18
+        },
+        "layer_3": {
+          "cv_mean": 0.3879609326791066,
+          "cv_stdev": 0.002653302234589756,
+          "gini_mean": 0.21652561775267737,
+          "gini_stdev": 0.0014305596434804964,
+          "utilization_mean": 1.0,
+          "utilization_stdev": 0.0,
+          "n_trials": 18
+        },
+        "layer_4": {
+          "cv_mean": 0.6416954407868563,
+          "cv_stdev": 0.0033224591138999258,
+          "gini_mean": 0.3649494368941696,
+          "gini_stdev": 0.001900127642400914,
+          "utilization_mean": 1.0,
+          "utilization_stdev": 0.0,
+          "n_trials": 18
+        },
+        "layer_5": {
+          "cv_mean": 0.7023701539162446,
+          "cv_stdev": 0.003958660578307845,
+          "gini_mean": 0.36729627228437856,
+          "gini_stdev": 0.0016805015980511544,
+          "utilization_mean": 1.0,
+          "utilization_stdev": 0.0,
+          "n_trials": 18
+        },
+        "layer_6": {
+          "cv_mean": 0.9603998085304543,
+          "cv_stdev": 0.0031160193756831923,
+          "gini_mean": 0.5212629530164931,
+          "gini_stdev": 0.001477629670156451,
+          "utilization_mean": 1.0,
+          "utilization_stdev": 0.0,
+          "n_trials": 18
+        },
+        "layer_7": {
+          "cv_mean": 0.8721902719277036,
+          "cv_stdev": 0.003946396841576224,
+          "gini_mean": 0.45620434459652015,
+          "gini_stdev": 0.001519276157786567,
+          "utilization_mean": 1.0,
+          "utilization_stdev": 0.0,
+          "n_trials": 18
+        },
+        "layer_8": {
+          "cv_mean": 1.026138458251953,
+          "cv_stdev": 0.003534546490044624,
+          "gini_mean": 0.5340890163845486,
+          "gini_stdev": 0.0014797159515045667,
+          "utilization_mean": 1.0,
+          "utilization_stdev": 0.0,
+          "n_trials": 18
+        },
+        "layer_9": {
+          "cv_mean": 0.8663260575280393,
+          "cv_stdev": 0.0024729135984309257,
+          "gini_mean": 0.45186840807070494,
+          "gini_stdev": 0.0011952060993359371,
+          "utilization_mean": 1.0,
+          "utilization_stdev": 0.0,
+          "n_trials": 18
+        },
+        "layer_10": {
+          "cv_mean": 1.3466646717212818,
+          "cv_stdev": 0.0033080330013380726,
+          "gini_mean": 0.6548127237955729,
+          "gini_stdev": 0.000987380080300381,
+          "utilization_mean": 1.0,
+          "utilization_stdev": 0.0,
+          "n_trials": 18
+        },
+        "layer_11": {
+          "cv_mean": 1.3650178923413352,
+          "cv_stdev": 0.0038110091988631297,
+          "gini_mean": 0.6295761804141293,
+          "gini_stdev": 0.001061546044792277,
+          "utilization_mean": 0.9991319444444444,
+          "utilization_stdev": 0.003682847818679935,
+          "n_trials": 18
+        },
+        "layer_12": {
+          "cv_mean": 1.6817214513708043,
+          "cv_stdev": 0.003928491498813454,
+          "gini_mean": 0.7291790941026476,
+          "gini_stdev": 0.0008785739748812017,
+          "utilization_mean": 1.0,
+          "utilization_stdev": 0.0,
+          "n_trials": 18
+        },
+        "layer_13": {
+          "cv_mean": 1.4554063939017627,
+          "cv_stdev": 0.02166692310211185,
+          "gini_mean": 0.6835303819393308,
+          "gini_stdev": 0.005424139444754365,
+          "utilization_mean": 0.9782986111111112,
+          "utilization_stdev": 0.019426290691131436,
+          "n_trials": 18
+        },
+        "layer_14": {
+          "cv_mean": 2.0216075755931713,
+          "cv_stdev": 0.005670353124504295,
+          "gini_mean": 0.7783296994809751,
+          "gini_stdev": 0.0010867678353513376,
+          "utilization_mean": 0.9982638888888888,
+          "utilization_stdev": 0.0050528255215902705,
+          "n_trials": 18
+        },
+        "layer_15": {
+          "cv_mean": 2.1787254922088035,
+          "cv_stdev": 0.005591934047260573,
+          "gini_mean": 0.7941953022234592,
+          "gini_stdev": 0.0016544695854356381,
+          "utilization_mean": 0.9661458333333334,
+          "utilization_stdev": 0.022258972496897674,
+          "n_trials": 18
+        },
+        "layer_16": {
+          "cv_mean": 1.6570843392831307,
+          "cv_stdev": 0.006732556473856407,
+          "gini_mean": 0.7354068388762297,
+          "gini_stdev": 0.001167516958970308,
+          "utilization_mean": 0.9809027777777778,
+          "utilization_stdev": 0.010105651043180541,
+          "n_trials": 18
+        },
+        "layer_17": {
+          "cv_mean": 1.6933440872191166,
+          "cv_stdev": 0.008973063954237033,
+          "gini_mean": 0.7454065440935723,
+          "gini_stdev": 0.001898447008770294,
+          "utilization_mean": 0.9296875,
+          "utilization_stdev": 0.024116988535665306,
+          "n_trials": 18
+        },
+        "layer_18": {
+          "cv_mean": 2.086502131709346,
+          "cv_stdev": 0.003805085395367972,
+          "gini_mean": 0.8270058412905092,
+          "gini_stdev": 0.000492497324124009,
+          "utilization_mean": 0.78125,
+          "utilization_stdev": 0.04046206011591018,
+          "n_trials": 18
+        },
+        "layer_19": {
+          "cv_mean": 2.7004711668206234,
+          "cv_stdev": 0.0022230168761671132,
+          "gini_mean": 0.8768847332182582,
+          "gini_stdev": 0.0003218299864230785,
+          "utilization_mean": 0.8463541666666666,
+          "utilization_stdev": 0.026930303904381638,
+          "n_trials": 18
+        },
+        "layer_20": {
+          "cv_mean": 2.0190476368091725,
+          "cv_stdev": 0.0034688965212963867,
+          "gini_mean": 0.8017705394603588,
+          "gini_stdev": 0.0005137364867368191,
+          "utilization_mean": 0.7456597222222222,
+          "utilization_stdev": 0.038200246514150014,
+          "n_trials": 18
+        },
+        "layer_21": {
+          "cv_mean": 2.140818358848515,
+          "cv_stdev": 0.008800647340886305,
+          "gini_mean": 0.7762172679602695,
+          "gini_stdev": 0.002154371583680132,
+          "utilization_mean": 0.9635416666666666,
+          "utilization_stdev": 0.021437323142813606,
+          "n_trials": 18
+        },
+        "layer_22": {
+          "cv_mean": 1.8843384354202837,
+          "cv_stdev": 0.005168971239786903,
+          "gini_mean": 0.7747107668276186,
+          "gini_stdev": 0.0007997645361128,
+          "utilization_mean": 0.9322916666666666,
+          "utilization_stdev": 0.016947692017082513,
+          "n_trials": 18
+        },
+        "layer_23": {
+          "cv_mean": 1.8987726622261776,
+          "cv_stdev": 0.021802543065275123,
+          "gini_mean": 0.7516200087705484,
+          "gini_stdev": 0.0052448610232331315,
+          "utilization_mean": 0.9453125,
+          "utilization_stdev": 0.02584175720498079,
+          "n_trials": 18
+        },
+        "layer_24": {
+          "cv_mean": 2.3597291056315104,
+          "cv_stdev": 0.006615896013833173,
+          "gini_mean": 0.8342954056351273,
+          "gini_stdev": 0.0010728820008839134,
+          "utilization_mean": 0.96875,
+          "utilization_stdev": 0.0,
+          "n_trials": 18
+        },
+        "layer_25": {
+          "cv_mean": 1.549986701619431,
+          "cv_stdev": 0.023032136225438506,
+          "gini_mean": 0.7062521601322571,
+          "gini_stdev": 0.0064807416328062995,
+          "utilization_mean": 0.9270833333333334,
+          "utilization_stdev": 0.023360781299887563,
+          "n_trials": 18
+        },
+        "layer_26": {
+          "cv_mean": 2.4403352299442997,
+          "cv_stdev": 0.0046864886703433814,
+          "gini_mean": 0.856262444390191,
+          "gini_stdev": 0.0006612165254807757,
+          "utilization_mean": 0.921875,
+          "utilization_stdev": 0.011983827950740163,
+          "n_trials": 18
+        }
+      }
+    },
+    "inference": {
+      "latency_ms": {
+        "mean": 96422.53649632137,
+        "stdev": 10401.110909196359
+      },
+      "throughput_tokens_per_sec": {
+        "mean": 1.338649393042876,
+        "stdev": 0.11001557501257321
+      },
+      "memory_allocated_gb": {
+        "mean": 17.288632689777778,
+        "stdev": 2.0615499471359836e-06
+      },
+      "memory_reserved_gb": {
+        "mean": 18.34192440888889,
+        "stdev": 0.0006781787614874503
+      }
+    },
+    "compute": {
+      "total_flops": 7748404641792,
+      "active_params_billions": 15.706537472,
+      "num_flops_per_token": 15133602816
+    },
+    "walltime": {
+      "mean": 3373.7895374827913,
+      "stdev": 460.0844073198865,
+      "total": 60728.21167469025
+    }
+  },
+  "per_trial": [
+    {
+      "trial": 1,
+      "avg_cv": 1.479817250273536,
+      "avg_gini": 0.6225008814572245,
+      "avg_utilization": 0.9603365384615384,
+      "latency_ms": 94926.7121553421,
+      "throughput_tok_s": 1.3484086522509635,
+      "memory_allocated_gb": 17.288633344,
+      "walltime_s": 3327.893055200577
+    },
+    {
+      "trial": 2,
+      "avg_cv": 1.4826645139666343,
+      "avg_gini": 0.6237151202167357,
+      "avg_utilization": 0.9507211538461539,
+      "latency_ms": 91709.43989753723,
+      "throughput_tok_s": 1.3957123731538275,
+      "memory_allocated_gb": 17.288631296,
+      "walltime_s": 3190.230311393738
+    },
+    {
+      "trial": 3,
+      "avg_cv": 1.4810138925761824,
+      "avg_gini": 0.6230767319909903,
+      "avg_utilization": 0.9579326923076923,
+      "latency_ms": 91853.8399219513,
+      "throughput_tok_s": 1.393518225354131,
+      "memory_allocated_gb": 17.288629248,
+      "walltime_s": 3192.470944404602
+    },
+    {
+      "trial": 4,
+      "avg_cv": 1.487454685708295,
+      "avg_gini": 0.6246617151399344,
+      "avg_utilization": 0.9495192307692307,
+      "latency_ms": 96746.23560905457,
+      "throughput_tok_s": 1.3230488937806317,
+      "memory_allocated_gb": 17.288630272,
+      "walltime_s": 3224.583966255188
+    },
+    {
+      "trial": 5,
+      "avg_cv": 1.4851278965245072,
+      "avg_gini": 0.6237465258484541,
+      "avg_utilization": 0.9627403846153846,
+      "latency_ms": 109095.75662612915,
+      "throughput_tok_s": 1.1732811977156512,
+      "memory_allocated_gb": 17.28863488,
+      "walltime_s": 3968.8002223968506
+    },
+    {
+      "trial": 6,
+      "avg_cv": 1.4838561220833684,
+      "avg_gini": 0.6235600488499664,
+      "avg_utilization": 0.9561298076923077,
+      "latency_ms": 96325.2102136612,
+      "throughput_tok_s": 1.3288317743203488,
+      "memory_allocated_gb": 17.288631296,
+      "walltime_s": 5004.893261909485
+    },
+    {
+      "trial": 7,
+      "avg_cv": 1.481710839726964,
+      "avg_gini": 0.6229173195528417,
+      "avg_utilization": 0.9603365384615384,
+      "latency_ms": 134898.1674671173,
+      "throughput_tok_s": 0.9488638904690918,
+      "memory_allocated_gb": 17.288631808,
+      "walltime_s": 3721.8349556922913
+    },
+    {
+      "trial": 8,
+      "avg_cv": 1.4806282444230832,
+      "avg_gini": 0.6230723947464533,
+      "avg_utilization": 0.9633413461538461,
+      "latency_ms": 93449.95167255402,
+      "throughput_tok_s": 1.3697171342421703,
+      "memory_allocated_gb": 17.288631296,
+      "walltime_s": 3180.8290753364563
+    },
+    {
+      "trial": 9,
+      "avg_cv": 1.478676220969844,
+      "avg_gini": 0.6223389718349628,
+      "avg_utilization": 0.9609375,
+      "latency_ms": 92893.05937290192,
+      "throughput_tok_s": 1.3779285649982502,
+      "memory_allocated_gb": 17.288632832,
+      "walltime_s": 3219.3881368637085
+    },
+    {
+      "trial": 10,
+      "avg_cv": 1.4844306016654045,
+      "avg_gini": 0.6237898962277114,
+      "avg_utilization": 0.9585336538461539,
+      "latency_ms": 92771.25086784363,
+      "throughput_tok_s": 1.3797377830157873,
+      "memory_allocated_gb": 17.28863232,
+      "walltime_s": 3164.309189558029
+    },
+    {
+      "trial": 11,
+      "avg_cv": 1.4830862296504037,
+      "avg_gini": 0.6236383748554083,
+      "avg_utilization": 0.9591346153846154,
+      "latency_ms": 91913.3332490921,
+      "throughput_tok_s": 1.3926162339593353,
+      "memory_allocated_gb": 17.288632832,
+      "walltime_s": 3158.696854352951
+    },
+    {
+      "trial": 12,
+      "avg_cv": 1.4795170356432905,
+      "avg_gini": 0.6223431018709714,
+      "avg_utilization": 0.9585336538461539,
+      "latency_ms": 92103.10866832733,
+      "throughput_tok_s": 1.3897467941168091,
+      "memory_allocated_gb": 17.28863488,
+      "walltime_s": 3187.1552560329437
+    },
+    {
+      "trial": 13,
+      "avg_cv": 1.485392952944011,
+      "avg_gini": 0.6241408012869377,
+      "avg_utilization": 0.9627403846153846,
+      "latency_ms": 92994.75200176239,
+      "throughput_tok_s": 1.3764217576232065,
+      "memory_allocated_gb": 17.28863488,
+      "walltime_s": 3204.482659101486
+    },
+    {
+      "trial": 14,
+      "avg_cv": 1.4755098148618797,
+      "avg_gini": 0.6219751154787776,
+      "avg_utilization": 0.9591346153846154,
+      "latency_ms": 93468.47674846649,
+      "throughput_tok_s": 1.3694456618188127,
+      "memory_allocated_gb": 17.288635392,
+      "walltime_s": 3200.296420097351
+    },
+    {
+      "trial": 15,
+      "avg_cv": 1.4814703324920557,
+      "avg_gini": 0.6233644208505487,
+      "avg_utilization": 0.9501201923076923,
+      "latency_ms": 93018.8910484314,
+      "throughput_tok_s": 1.376064566641149,
+      "memory_allocated_gb": 17.28863488,
+      "walltime_s": 3197.762044906616
+    },
+    {
+      "trial": 16,
+      "avg_cv": 1.4850038022079468,
+      "avg_gini": 0.6240183283870225,
+      "avg_utilization": 0.9447115384615384,
+      "latency_ms": 92353.54731082916,
+      "throughput_tok_s": 1.3859781646415548,
+      "memory_allocated_gb": 17.288631296,
+      "walltime_s": 3198.7390832901
+    },
+    {
+      "trial": 17,
+      "avg_cv": 1.4821272737465323,
+      "avg_gini": 0.6235474334990357,
+      "avg_utilization": 0.9543269230769231,
+      "latency_ms": 92953.69367599487,
+      "throughput_tok_s": 1.3770297331719241,
+      "memory_allocated_gb": 17.28862976,
+      "walltime_s": 3188.6078538894653
+    },
+    {
+      "trial": 18,
+      "avg_cv": 1.4816969946833076,
+      "avg_gini": 0.6231423334513344,
+      "avg_utilization": 0.9585336538461539,
+      "latency_ms": 92130.23042678833,
+      "throughput_tok_s": 1.3893376734981222,
+      "memory_allocated_gb": 17.288635904,
+      "walltime_s": 3197.2383840084076
+    }
+  ],
+  "trial_config": {
+    "num_trials": 20,
+    "trials_attempted": 20,
+    "preset": "full",
+    "skip_lm_eval": false,
+    "checkpoint_dir": "./outputs/checkpoint/step-1000",
+    "config_file": "./torchtitan/models/deepseek_v3/train_configs/deepseek_v3_16b_nvidia_4x_a100_80GBmem.toml",
+    "elapsed_seconds": 69728.12057200301,
+    "avg_elapsed_per_trial": 3486.4060286001504,
+    "interrupted": false
+  }
+}
