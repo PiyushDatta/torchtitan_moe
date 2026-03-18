@@ -435,11 +435,43 @@ def build_optimizers_with_moe_load_balancing(
                     # pyrefly: ignore [missing-attribute]
                     moe.tokens_per_expert.zero_()
 
+    # Check if expert lifecycle is enabled on any MoE layer
+    lifecycle_manager = None
+    for model_part in model_parts:
+        layers = model_part.get_submodule("layers")
+        assert isinstance(layers, nn.ModuleDict)
+        for transformer_block in layers.values():
+            if (
+                transformer_block.moe_enabled
+                and hasattr(transformer_block.moe, "load_balance_coeff")
+                and getattr(transformer_block.moe, "_lifecycle_enabled", False)
+            ):
+                from torchtitan.models.moe.expert_lifecycle import (
+                    ExpertLifecycleManager,
+                )
+                # Read lifecycle config from the first MoE layer's args
+                moe = transformer_block.moe
+                lifecycle_manager = ExpertLifecycleManager(
+                    lifecycle_interval=getattr(moe, "_lifecycle_interval", 100),
+                    prune_ratio=getattr(moe, "_lifecycle_prune_ratio", 0.1),
+                    mutation_scale=getattr(moe, "_lifecycle_mutation_scale", 0.01),
+                )
+                break
+        if lifecycle_manager is not None:
+            break
+
     if _should_register_moe_balancing_hook(model_parts):
-        optimizers.register_step_pre_hook(
-            lambda *args, **kwargs: _update_expert_bias(
-                model_parts, parallel_dims=parallel_dims
-            )
-        )
+
+        def _combined_hook(*args, **kwargs):
+            # 1. Accumulate fitness BEFORE tokens_per_expert is zeroed
+            if lifecycle_manager is not None:
+                lifecycle_manager.accumulate_fitness(model_parts)
+            # 2. Update expert bias (reads then zeros tokens_per_expert)
+            _update_expert_bias(model_parts, parallel_dims=parallel_dims)
+            # 3. Maybe perform lifecycle evolution
+            if lifecycle_manager is not None:
+                lifecycle_manager.maybe_evolve(model_parts)
+
+        optimizers.register_step_pre_hook(_combined_hook)
 
     return optimizers

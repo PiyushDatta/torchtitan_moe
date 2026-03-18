@@ -52,6 +52,10 @@ pipeline_parallel_schedule = "Interleaved1F1B"
 expert_parallel_degree = 4
 expert_tensor_parallel_degree = 1
 expert_parallel_comm_backend = "standard" # ["standard", "deepep"]
+expert_lifecycle = true
+lifecycle_interval = 100
+lifecycle_prune_ratio = 0.1
+lifecycle_mutation_scale = 0.01
 
 [checkpoint]
 enable = true

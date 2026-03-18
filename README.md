@@ -64,6 +64,20 @@ Standard MoE routes tokens based on the full hidden state, which converges acros
 residual_routing = true  # false = standard routing (default)
 ```
 
+## Expert Lifecycle (Evolutionary Expert Recycling)
+An evolutionary approach to combating routing collapse. Instead of just preventing expert death through load balancing, the lifecycle manager **accepts death as natural and recycles the capacity**: it periodically evaluates expert fitness, prunes dead/dying experts, and replaces them with mutated clones of top-performing experts.
+
+Inspired by the Lottery Ticket Hypothesis (Frankle & Carlin, 2019), RIGL (Evci et al., 2020), and Population Based Training (Jaderberg et al., 2017).
+
+To enable, add to your TOML config:
+```toml
+[parallelism]
+expert_lifecycle = true           # false = disabled (default)
+lifecycle_interval = 100          # steps between lifecycle evaluations
+lifecycle_prune_ratio = 0.1       # bottom 10% pruned per cycle
+lifecycle_mutation_scale = 0.01   # noise scale for cloned weights
+```
+
 ## Evals done so far
 
 ### MoE baseline vs MoD ([arxiv.org/abs/2404.02258])

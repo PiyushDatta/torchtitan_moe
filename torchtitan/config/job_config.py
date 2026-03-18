@@ -495,6 +495,24 @@ class Parallelism:
     hidden state. Combats routing collapse in deep layers.
     """
 
+    expert_lifecycle: bool = False
+    """
+    Enable evolutionary expert lifecycle management for MoE layers.
+    Periodically prunes dead/dying experts and replaces them with mutated
+    clones of top-performing experts. Recycles wasted parameter capacity.
+    """
+
+    lifecycle_interval: int = 100
+    """Steps between expert lifecycle evaluations. Lower = more frequent
+    recycling but more training disruption."""
+
+    lifecycle_prune_ratio: float = 0.1
+    """Fraction of experts eligible for pruning each cycle (e.g., 0.1 = bottom 10%)."""
+
+    lifecycle_mutation_scale: float = 0.01
+    """Scale of noise added to cloned weights relative to source weight std.
+    Higher = clones diverge faster from parent."""
+
 
 @dataclass
 class Checkpoint:

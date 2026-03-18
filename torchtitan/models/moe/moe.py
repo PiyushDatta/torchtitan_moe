@@ -11,8 +11,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.distributed.tensor import DTensor
-
 from torchtitan.tools.logging import logger
+
 from .utils import indices_padding_wrapper
 
 
@@ -43,6 +43,12 @@ class MoEArgs:
 
     # Residual routing
     residual_routing: bool = False  # set from Parallelism config
+
+    # Expert Lifecycle (evolutionary expert recycling)
+    expert_lifecycle: bool = False  # set from Parallelism config
+    lifecycle_interval: int = 100  # steps between lifecycle evaluations
+    lifecycle_prune_ratio: float = 0.1  # bottom 10% pruned per cycle
+    lifecycle_mutation_scale: float = 0.01  # noise scale for cloned weights
 
 
 # can be used as dense FFN layer or shared experts in MoE layers
@@ -474,6 +480,12 @@ class MoE(nn.Module):
             persistent=False,
         )
 
+        # Expert lifecycle config (read by optimizer hook to create manager)
+        self._lifecycle_enabled = moe_args.expert_lifecycle
+        self._lifecycle_interval = moe_args.lifecycle_interval
+        self._lifecycle_prune_ratio = moe_args.lifecycle_prune_ratio
+        self._lifecycle_mutation_scale = moe_args.lifecycle_mutation_scale
+
     def forward(
         self, x: torch.Tensor, routing_input: torch.Tensor | None = None
     ) -> torch.Tensor:
@@ -583,22 +595,32 @@ class MoE(nn.Module):
 
 
 def build_moe(
-    args: MoEArgs, dim: int, hidden_dim: int, moe_impl: str = "standard",
+    args: MoEArgs,
+    dim: int,
+    hidden_dim: int,
+    moe_impl: str = "standard",
     mod_wrapped: bool = False,
 ) -> nn.Module:
     """Factory for MoE with different backends: 'standard' (all-to-all) or 'deepep' (DeepEP)."""
+    lifecycle_tag = ""
+    if args.expert_lifecycle:
+        lifecycle_tag = (
+            f", expert_lifecycle=ON (interval={args.lifecycle_interval}, "
+            f"prune={args.lifecycle_prune_ratio}, mutation={args.lifecycle_mutation_scale})"
+        )
+
     if moe_impl == "deepep":
         from .moe_deepep import DeepEPMoE
 
         logger.info(
-            f"DeepEP MoE: num_experts={args.num_experts}, top_k={args.top_k}, dim={dim}, hidden_dim={hidden_dim}"
+            f"DeepEP MoE: num_experts={args.num_experts}, top_k={args.top_k}, dim={dim}, hidden_dim={hidden_dim}{lifecycle_tag}"
         )
         return DeepEPMoE(moe_args=args, dim=dim, hidden_dim=hidden_dim)
     elif args.residual_routing:
         from .residual_moe import ResidualRoutedMoE
 
         logger.info(
-            f"Residual-Routed MoE: num_experts={args.num_experts}, top_k={args.top_k}, dim={dim}, hidden_dim={hidden_dim}"
+            f"Residual-Routed MoE: num_experts={args.num_experts}, top_k={args.top_k}, dim={dim}, hidden_dim={hidden_dim}{lifecycle_tag}"
         )
         return ResidualRoutedMoE(args, dim=dim, hidden_dim=hidden_dim)
     # NOTE: Mixture of Depths (MoD) is now applied at the TransformerBlock level
@@ -607,6 +629,6 @@ def build_moe(
 
     label = "MoE (MoD-wrapped)" if mod_wrapped else "Standard MoE"
     logger.info(
-        f"{label}: num_experts={args.num_experts}, top_k={args.top_k}, dim={dim}, hidden_dim={hidden_dim}"
+        f"{label}: num_experts={args.num_experts}, top_k={args.top_k}, dim={dim}, hidden_dim={hidden_dim}{lifecycle_tag}"
     )
     return MoE(args, dim=dim, hidden_dim=hidden_dim)
